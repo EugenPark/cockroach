@@ -1482,7 +1482,7 @@ func NewStore(
 	iot := ioThresholds{}
 	iot.Replace(nil, 1.0) // init as empty
 
-	memEngine := storage.NewDefaultInMemForTesting(storage.DisableWAL())
+	// memEngine := storage.NewDefaultInMemForTesting(storage.DisableWAL())
 
 	s := &Store{
 		// NB: do not access these fields directly. Instead, use
@@ -1492,7 +1492,7 @@ func NewStore(
 		internalEngines: internalEngines{
 			stateEngine: eng,
 			todoEngine:  eng,
-			logEngine:   memEngine,
+			logEngine:   eng,
 		},
 		cfg:                               cfg,
 		db:                                cfg.DB, // TODO(tschottdorf): remove redundancy.
