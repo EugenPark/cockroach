@@ -9,6 +9,7 @@ go_library(
         "sideload_disk.go",
         "stateloader.go",
         "sync_waiter.go",
+				"metronome.go"
     ],
     importpath = "github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore",
     visibility = ["//visibility:public"],
@@ -54,6 +55,7 @@ go_test(
         "logstore_test.go",
         "sideload_test.go",
         "sync_waiter_test.go",
+				"metronome_test.go"
     ],
     data = glob(["testdata/**"]),
     embed = [":logstore"],

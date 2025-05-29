@@ -136,6 +136,7 @@ type LogStore struct {
 	Settings    *cluster.Settings
 
 	DisableSyncLogWriteToss bool // for testing only
+	Metronome               Metronome
 }
 
 // SyncCallback is a callback that is notified when a raft log write has been
@@ -206,8 +207,9 @@ func (s *LogStore) storeEntriesAndCommitBatch(
 		}
 		stats.EntryStats.Add(entryStats) // TODO(pav-kv): just return the stats.
 		state.ByteSize += entryStats.SideloadedBytes
+
 		if state, err = logAppend(
-			ctx, s.StateLoader.RaftLogPrefix(), batch, state, thinEntries,
+			ctx, s.StateLoader.RaftLogPrefix(), batch, state, thinEntries, s.Metronome,
 		); err != nil {
 			const expl = "during append"
 			return RaftState{}, errors.Wrap(err, expl)
@@ -407,6 +409,7 @@ func logAppend(
 	rw storage.ReadWriter,
 	prev RaftState,
 	entries []raftpb.Entry,
+	metronome Metronome,
 ) (RaftState, error) {
 	if len(entries) == 0 {
 		return prev, nil
@@ -434,6 +437,11 @@ func logAppend(
 			return RaftState{}, err
 		}
 		value.InitChecksum(key)
+
+		if !metronome.ShouldFlush(ent.Index) {
+			continue
+		}
+
 		var err error
 		if kvpb.RaftIndex(ent.Index) > prev.LastIndex {
 			_, err = storage.MVCCBlindPut(ctx, rw, key, hlc.Timestamp{}, *value, opts)

@@ -324,6 +324,39 @@ func (r *RangeDescriptor) Validate() error {
 	return nil
 }
 
+func getAllQuorums(replicas []ReplicaDescriptor, q int) [][]ReplicaID {
+	var results [][]ReplicaID
+	var comb []ReplicaID
+
+	var helper func(start int)
+	helper = func(start int) {
+		if len(comb) == q {
+			// Make a copy of comb to avoid overwriting during recursion
+			c := make([]ReplicaID, q)
+			copy(c, comb)
+			results = append(results, c)
+			return
+		}
+		for i := start; i < len(replicas); i++ {
+			comb = append(comb, replicas[i].ReplicaID)
+			helper(i + 1)
+			comb = comb[:len(comb)-1] // backtrack
+		}
+	}
+
+	helper(0)
+	return results
+}
+
+func (r *RangeDescriptor) GetAllQuorums() [][]ReplicaID {
+	replicas := r.Replicas().Descriptors()
+
+	n := len(replicas)     // N = 2f + 1
+	q := ((n - 1) / 2) + 1 // Q = f + 1
+
+	return getAllQuorums(replicas, q)
+}
+
 func (r RangeDescriptor) String() string {
 	return redact.StringWithoutMarkers(r)
 }

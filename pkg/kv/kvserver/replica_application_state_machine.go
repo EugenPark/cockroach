@@ -13,6 +13,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvadmission"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
 	"github.com/cockroachdb/cockroach/pkg/raft"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
@@ -379,6 +380,20 @@ func (sm *replicaStateMachine) maybeApplyConfChange(ctx context.Context, cmd *re
 		// to raft.
 		return nil
 	}
+
+	sm.r.raftMu.Lock()
+	defer sm.r.raftMu.Unlock()
+
+	// TODO: Have a slight check whether the quorum actually changed or not if it is the same then do not recompute the quorums
+	schemes := sm.r.Desc().GetAllQuorums()
+	logstore.SortQuorums(schemes)
+	logstore.RebalanceQuorums(schemes)
+
+	sm.r.raftMu.logStorage.Metronome = logstore.Metronome{
+		ReplicaID: sm.r.ReplicaID(),
+		Schemes:   schemes,
+	}
+
 	return sm.r.withRaftGroup(func(rn *raft.RawNode) (bool, error) {
 		// NB: `etcd/raft` configuration changes diverge from the official Raft way
 		// in that a configuration change becomes active when the corresponding log
