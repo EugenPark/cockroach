@@ -1,18 +1,69 @@
 package logstore
 
 import (
-	"log"
+	"context"
 	"math"
 	"slices"
 	"sort"
+	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
 )
+
+type timeout chan struct{}
+
+type timeoutQueue struct {
+	queue map[raftpb.Index]timeout
+}
+
+func NewTimeoutQueue() timeoutQueue {
+	return timeoutQueue{
+		queue: make(map[raftpb.Index]timeout),
+	}
+}
+
+func (tq *timeoutQueue) AddTimeout(index raftpb.Index, duration time.Duration, onTimeout func()) {
+
+	timer := time.NewTimer(duration)
+
+	timeout := make(chan struct{})
+	tq.queue[index] = timeout
+
+	go func() {
+		select {
+		case <-timer.C:
+			onTimeout()
+		case <-timeout:
+			if !timer.Stop() {
+				<-timer.C // Drain the channel to avoid leaks
+			}
+		}
+	}()
+}
+
+func (tq *timeoutQueue) CancelTimeout(index raftpb.Index) {
+	// This was an index which was flushed so no need to cancel anything
+	if tq.queue[index] == nil {
+		return
+	}
+
+	close(tq.queue[index])
+	tq.queue[index] = nil
+}
 
 // TODO: perhaps make these fields private?
 type Metronome struct {
-	ReplicaID roachpb.ReplicaID
-	Schemes   [][]roachpb.ReplicaID
+	ReplicaID     roachpb.ReplicaID
+	Schemes       [][]roachpb.ReplicaID
+	InflightQueue timeoutQueue
+}
+
+func (m *Metronome) Commit(toApply []raftpb.Entry) {
+	for _, ent := range toApply {
+		m.InflightQueue.CancelTimeout(raftpb.Index(ent.Index))
+	}
 }
 
 func (m *Metronome) ShouldFlush(raftIndex uint64) bool {
@@ -22,8 +73,8 @@ func (m *Metronome) ShouldFlush(raftIndex uint64) bool {
 	}
 
 	if raftIndex > math.MaxInt {
-		// handle overflow, error, or fallback
-		log.Fatalf("raftIndex %d is too large for int", raftIndex)
+		// When overflow flush to guarantee safety
+		log.Errorf(context.TODO(), "raftIndex %d is too large for int", raftIndex)
 		return true
 	}
 

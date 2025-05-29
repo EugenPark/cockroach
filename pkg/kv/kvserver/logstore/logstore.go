@@ -438,17 +438,27 @@ func logAppend(
 		}
 		value.InitChecksum(key)
 
+		var err error
+		flush := func() {
+			if kvpb.RaftIndex(ent.Index) > prev.LastIndex {
+				_, err = storage.MVCCBlindPut(ctx, rw, key, hlc.Timestamp{}, *value, opts)
+			} else {
+				_, err = storage.MVCCPut(ctx, rw, key, hlc.Timestamp{}, *value, opts)
+			}
+		}
+
 		if !metronome.ShouldFlush(ent.Index) {
+			min := 10  // milliseconds
+			max := 200 // milliseconds
+
+			randomMs := rand.Intn(max-min+1) + min
+			duration := time.Duration(randomMs) * time.Millisecond
+			metronome.InflightQueue.AddTimeout(raftpb.Index(ent.Index), duration, flush)
+
 			continue
 		}
 
-		var err error
-		if kvpb.RaftIndex(ent.Index) > prev.LastIndex {
-			_, err = storage.MVCCBlindPut(ctx, rw, key, hlc.Timestamp{}, *value, opts)
-		} else {
-			_, err = storage.MVCCPut(ctx, rw, key, hlc.Timestamp{}, *value, opts)
-		}
-		if err != nil {
+		if flush(); err != nil {
 			return RaftState{}, err
 		}
 	}

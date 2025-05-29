@@ -65,7 +65,7 @@ func TestRaftStorageWrites(t *testing.T) {
 		batch := writeBatch(func(rw storage.ReadWriter) {
 			require.NoError(t, storeHardState(ctx, rw, sl, hs))
 			var err error
-			newState, err = logAppend(ctx, sl.RaftLogPrefix(), rw, state, entries)
+			newState, err = logAppend(ctx, sl.RaftLogPrefix(), rw, state, entries, Metronome{})
 			require.NoError(t, err)
 		})
 		state = newState

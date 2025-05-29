@@ -2,7 +2,9 @@ package logstore
 
 import (
 	"testing"
+	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 )
 
@@ -140,5 +142,32 @@ func TestMetronomeShouldFlush(t *testing.T) {
 
 	if expected != result {
 		t.Errorf("Telling to not flush even though it is our turn")
+	}
+}
+
+func TestTimeoutQueue(t *testing.T) {
+	tq := NewTimeoutQueue()
+
+	val := 1
+	changeVal := func() {
+		val = 5
+	}
+
+	// Test OnTimeout
+	tq.AddTimeout(raftpb.Index(1), time.Duration(10)*time.Millisecond, changeVal)
+	time.Sleep(time.Duration(100) * time.Millisecond)
+
+	if val != 5 {
+		t.Errorf("Timeout not triggered properly")
+	}
+
+	val = 3
+	// Test cancellation
+	tq.AddTimeout(raftpb.Index(2), time.Duration(10)*time.Millisecond, changeVal)
+	tq.CancelTimeout(raftpb.Index(2))
+	time.Sleep(time.Duration(100) * time.Millisecond)
+
+	if val != 3 {
+		t.Errorf("Timeout cancellation not completed successfully")
 	}
 }

@@ -1337,6 +1337,7 @@ func (r *Replica) handleRaftReadyRaftMuLocked(
 	err = r.withRaftGroupLocked(func(raftGroup *raft.RawNode) (bool, error) {
 		r.deliverLocalRaftMsgsRaftMuLockedReplicaMuLocked(ctx, raftGroup)
 		raftGroup.AckApplied(toApply)
+		r.LogStorageRaftMuLocked().Metronome.Commit(toApply)
 
 		if stats.apply.numConfChangeEntries > 0 {
 			// If the raft leader got removed, campaign on the leaseholder. Uses
