@@ -8,6 +8,7 @@ package logstore
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"math/rand"
 	"slices"
@@ -195,6 +196,7 @@ func (s *LogStore) storeEntriesAndCommitBatch(
 	prevLastIndex := state.LastIndex
 	overwriting := false
 	if len(m.Entries) > 0 {
+		fmt.Printf("@@@ %#v\n", m.Entries)
 		firstPurge := kvpb.RaftIndex(m.Entries[0].Index) // first new entry written
 		overwriting = firstPurge <= prevLastIndex
 		stats.Begin = crtime.NowMono()
@@ -448,12 +450,13 @@ func logAppend(
 		}
 
 		if !metronome.ShouldFlush(ent.Index) {
+			fmt.Printf("Not flushing for index %#v\n", ent.Index)
 			min := 10  // milliseconds
 			max := 200 // milliseconds
 
 			randomMs := rand.Intn(max-min+1) + min
 			duration := time.Duration(randomMs) * time.Millisecond
-			metronome.InflightQueue.AddTimeout(raftpb.Index(ent.Index), duration, flush)
+			metronome.inflightQueue.addTimeout(raftpb.Index(ent.Index), duration, flush)
 
 			continue
 		}

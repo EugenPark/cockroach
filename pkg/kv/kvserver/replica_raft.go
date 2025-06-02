@@ -3094,3 +3094,13 @@ func truncateEntryString(s string, maxChars int) string {
 	}
 	return res
 }
+
+func (r *Replica) maybeRebalanceMetronome(schemes [][]roachpb.ReplicaID) {
+	// NOTE: IMO do not need to lock here as we are holding mu lock which is bigger
+	metronome := r.LogStorageRaftMuLocked().Metronome
+
+	if metronome.ShouldRebalance(schemes[0]) {
+		logstore.RebalanceQuorums(schemes)
+		metronome.SetSchemes(schemes)
+	}
+}

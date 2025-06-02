@@ -18,13 +18,13 @@ type timeoutQueue struct {
 	queue map[raftpb.Index]timeout
 }
 
-func NewTimeoutQueue() timeoutQueue {
+func newTimeoutQueue() timeoutQueue {
 	return timeoutQueue{
 		queue: make(map[raftpb.Index]timeout),
 	}
 }
 
-func (tq *timeoutQueue) AddTimeout(index raftpb.Index, duration time.Duration, onTimeout func()) {
+func (tq *timeoutQueue) addTimeout(index raftpb.Index, duration time.Duration, onTimeout func()) {
 
 	timer := time.NewTimer(duration)
 
@@ -43,7 +43,7 @@ func (tq *timeoutQueue) AddTimeout(index raftpb.Index, duration time.Duration, o
 	}()
 }
 
-func (tq *timeoutQueue) CancelTimeout(index raftpb.Index) {
+func (tq *timeoutQueue) cancelTimeout(index raftpb.Index) {
 	// This was an index which was flushed so no need to cancel anything
 	if tq.queue[index] == nil {
 		return
@@ -55,20 +55,61 @@ func (tq *timeoutQueue) CancelTimeout(index raftpb.Index) {
 
 // TODO: perhaps make these fields private?
 type Metronome struct {
-	ReplicaID     roachpb.ReplicaID
-	Schemes       [][]roachpb.ReplicaID
-	InflightQueue timeoutQueue
+	replicaID     roachpb.ReplicaID
+	schemes       [][]roachpb.ReplicaID
+	inflightQueue timeoutQueue
+}
+
+func InitializeMetronome(replicaID roachpb.ReplicaID) Metronome {
+	return Metronome{
+		replicaID:     replicaID,
+		inflightQueue: newTimeoutQueue(),
+	}
+}
+
+func (m *Metronome) SetSchemes(schemes [][]roachpb.ReplicaID) {
+	m.schemes = schemes
+}
+
+func (m *Metronome) GetSchemes() [][]roachpb.ReplicaID {
+	return m.schemes
 }
 
 func (m *Metronome) Commit(toApply []raftpb.Entry) {
 	for _, ent := range toApply {
-		m.InflightQueue.CancelTimeout(raftpb.Index(ent.Index))
+		m.inflightQueue.cancelTimeout(raftpb.Index(ent.Index))
 	}
+}
+
+func (m *Metronome) ShouldRebalance(otherScheme []roachpb.ReplicaID) bool {
+	if m.schemes == nil {
+		return true
+	}
+
+	scheme := m.schemes[0]
+	if len(scheme) != len(otherScheme) {
+		return true
+	}
+
+	freq := make(map[roachpb.ReplicaID]int, len(otherScheme))
+
+	for _, v := range scheme {
+		freq[v]++
+	}
+
+	for _, v := range otherScheme {
+		freq[v]--
+		if freq[v] < 0 {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (m *Metronome) ShouldFlush(raftIndex uint64) bool {
 	// If schemes are not initialized flush
-	if len(m.Schemes) == 0 {
+	if m.schemes == nil || len(m.schemes) == 0 {
 		return true
 	}
 
@@ -79,12 +120,12 @@ func (m *Metronome) ShouldFlush(raftIndex uint64) bool {
 	}
 
 	index := int(raftIndex)
-	scheme := m.Schemes[index%len(m.Schemes)]
+	scheme := m.schemes[index%len(m.schemes)]
 
-	return slices.Contains(scheme, m.ReplicaID)
+	return slices.Contains(scheme, m.replicaID)
 }
 
-func SortQuorums(quorums [][]roachpb.ReplicaID) {
+func sortQuorums(quorums [][]roachpb.ReplicaID) {
 	// Step 1: sort each quorum slice individually
 	for _, quorum := range quorums {
 		slices.Sort(quorum)
@@ -121,6 +162,8 @@ func countOverlapping(a, b []roachpb.ReplicaID) int {
 }
 
 func RebalanceQuorums(quorums [][]roachpb.ReplicaID) {
+	sortQuorums(quorums)
+
 	minIndex := -1
 	minCount := int(^uint(0) >> 1)
 

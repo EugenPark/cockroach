@@ -226,6 +226,7 @@ func newUninitializedReplicaWithoutRaftGroup(
 		Settings:   store.cfg.Settings,
 		DisableSyncLogWriteToss: buildutil.CrdbTestBuild &&
 			store.TestingKnobs().DisableSyncLogWriteToss,
+		Metronome: logstore.InitializeMetronome(r.ReplicaID()),
 	}
 
 	r.splitQueueThrottle = util.Every(splitQueueThrottleDuration)

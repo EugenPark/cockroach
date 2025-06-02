@@ -92,7 +92,7 @@ func TestSortQuorums(t *testing.T) {
 		{3, 4, 5},
 		{2, 4, 5},
 	}
-	SortQuorums(quorums)
+	sortQuorums(quorums)
 
 	expected := [][]roachpb.ReplicaID{
 		{1, 2, 3},
@@ -112,8 +112,8 @@ func TestSortQuorums(t *testing.T) {
 
 func TestMetronomeShouldFlush(t *testing.T) {
 	metronome := Metronome{
-		ReplicaID: roachpb.ReplicaID(2),
-		Schemes: [][]roachpb.ReplicaID{
+		replicaID: roachpb.ReplicaID(2),
+		schemes: [][]roachpb.ReplicaID{
 			{1, 2, 3},
 			{1, 4, 5},
 			{2, 3, 4},
@@ -146,7 +146,7 @@ func TestMetronomeShouldFlush(t *testing.T) {
 }
 
 func TestTimeoutQueue(t *testing.T) {
-	tq := NewTimeoutQueue()
+	tq := newTimeoutQueue()
 
 	val := 1
 	changeVal := func() {
@@ -154,7 +154,7 @@ func TestTimeoutQueue(t *testing.T) {
 	}
 
 	// Test OnTimeout
-	tq.AddTimeout(raftpb.Index(1), time.Duration(10)*time.Millisecond, changeVal)
+	tq.addTimeout(raftpb.Index(1), time.Duration(10)*time.Millisecond, changeVal)
 	time.Sleep(time.Duration(100) * time.Millisecond)
 
 	if val != 5 {
@@ -163,8 +163,8 @@ func TestTimeoutQueue(t *testing.T) {
 
 	val = 3
 	// Test cancellation
-	tq.AddTimeout(raftpb.Index(2), time.Duration(10)*time.Millisecond, changeVal)
-	tq.CancelTimeout(raftpb.Index(2))
+	tq.addTimeout(raftpb.Index(2), time.Duration(10)*time.Millisecond, changeVal)
+	tq.cancelTimeout(raftpb.Index(2))
 	time.Sleep(time.Duration(100) * time.Millisecond)
 
 	if val != 3 {
