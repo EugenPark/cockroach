@@ -32,6 +32,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/iterutil"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
@@ -196,7 +197,6 @@ func (s *LogStore) storeEntriesAndCommitBatch(
 	prevLastIndex := state.LastIndex
 	overwriting := false
 	if len(m.Entries) > 0 {
-		fmt.Printf("@@@ %#v\n", m.Entries)
 		firstPurge := kvpb.RaftIndex(m.Entries[0].Index) // first new entry written
 		overwriting = firstPurge <= prevLastIndex
 		stats.Begin = crtime.NowMono()
@@ -210,8 +210,48 @@ func (s *LogStore) storeEntriesAndCommitBatch(
 		stats.EntryStats.Add(entryStats) // TODO(pav-kv): just return the stats.
 		state.ByteSize += entryStats.SideloadedBytes
 
+		raftLogPrefix := append([]byte(nil), s.StateLoader.RaftLogPrefix()...)
+
+		delayedWrite := func(ent raftpb.Entry) {
+			delayedBatch := newStoreEntriesBatch(s.Engine)
+			defer delayedBatch.Close()
+
+			ctx := context.Background()
+			timeoutCtx, cancel := context.WithTimeout(ctx, time.Second*10)
+			defer cancel()
+
+			diff := &enginepb.MVCCStats{}
+			diff.Reset()
+
+			opts := storage.MVCCWriteOptions{Stats: diff, Category: fs.ReplicationReadCategory}
+
+			value := &roachpb.Value{}
+			value.RawBytes = value.RawBytes[:0]
+
+			key := keys.RaftLogKeyFromPrefix(raftLogPrefix, kvpb.RaftIndex(ent.Index))
+
+			if err := value.SetProto(&ent); err != nil {
+				log.Errorf(ctx, "Delayed MVCCPut failed: %v", err)
+			}
+			value.InitChecksum(key)
+
+			// HACK: Issues with batch.Commit here
+			_, err := storage.MVCCPut(timeoutCtx, delayedBatch, key, hlc.Timestamp{}, *value, opts)
+			if err != nil {
+				log.Errorf(ctx, "Delayed MVCCPut failed: %v", err)
+				return
+			}
+
+			if err := delayedBatch.Commit(true); err != nil {
+				fmt.Printf("Error: %#v", err)
+				log.Errorf(ctx, "Delayed MVCCPut failed: %v", err)
+			}
+		}
+
+		entriesToFlush := s.Metronome.FilterEntries(thinEntries, delayedWrite)
+
 		if state, err = logAppend(
-			ctx, s.StateLoader.RaftLogPrefix(), batch, state, thinEntries, s.Metronome,
+			ctx, raftLogPrefix, batch, state, entriesToFlush,
 		); err != nil {
 			const expl = "during append"
 			return RaftState{}, errors.Wrap(err, expl)
@@ -260,6 +300,7 @@ func (s *LogStore) storeEntriesAndCommitBatch(
 		// interleaved blocking and non-blocking syncs (unless the testing knobs
 		// disable this randomization explicitly).
 		!(buildutil.CrdbTestBuild && !s.DisableSyncLogWriteToss && rand.Intn(2) == 0)
+	// fmt.Printf("nonBlockingSync %t, willSync %t, wantsSync %t\n", nonBlockingSync, willSync, wantsSync)
 	if nonBlockingSync {
 		// If non-blocking synchronization is enabled, apply the batched updates to
 		// the engine and initiate a synchronous disk write, but don't wait for the
@@ -410,8 +451,7 @@ func logAppend(
 	raftLogPrefix roachpb.Key,
 	rw storage.ReadWriter,
 	prev RaftState,
-	entries []raftpb.Entry,
-	metronome Metronome,
+	entries []MetronomeEntry,
 ) (RaftState, error) {
 	if len(entries) == 0 {
 		return prev, nil
@@ -431,42 +471,34 @@ func logAppend(
 	diff.Reset()
 
 	opts := storage.MVCCWriteOptions{Stats: diff, Category: fs.ReplicationReadCategory}
-	for i := range entries {
-		ent := &entries[i]
-		key := keys.RaftLogKeyFromPrefix(raftLogPrefix, kvpb.RaftIndex(ent.Index))
 
-		if err := value.SetProto(ent); err != nil {
+	for i := range entries {
+		mEnt := &entries[i]
+		key := keys.RaftLogKeyFromPrefix(raftLogPrefix, kvpb.RaftIndex(mEnt.entry.Index))
+
+		if err := value.SetProto(&mEnt.entry); err != nil {
 			return RaftState{}, err
 		}
 		value.InitChecksum(key)
 
-		var err error
-		flush := func() {
-			if kvpb.RaftIndex(ent.Index) > prev.LastIndex {
-				_, err = storage.MVCCBlindPut(ctx, rw, key, hlc.Timestamp{}, *value, opts)
-			} else {
-				_, err = storage.MVCCPut(ctx, rw, key, hlc.Timestamp{}, *value, opts)
-			}
-		}
-
-		if !metronome.ShouldFlush(ent.Index) {
-			fmt.Printf("Not flushing for index %#v\n", ent.Index)
-			min := 10  // milliseconds
-			max := 200 // milliseconds
-
-			randomMs := rand.Intn(max-min+1) + min
-			duration := time.Duration(randomMs) * time.Millisecond
-			metronome.inflightQueue.addTimeout(raftpb.Index(ent.Index), duration, flush)
-
+		if !mEnt.shouldFlush {
 			continue
 		}
 
-		if flush(); err != nil {
+		var err error
+
+		if kvpb.RaftIndex(mEnt.entry.Index) > prev.LastIndex {
+			_, err = storage.MVCCBlindPut(ctx, rw, key, hlc.Timestamp{}, *value, opts)
+		} else {
+			_, err = storage.MVCCPut(ctx, rw, key, hlc.Timestamp{}, *value, opts)
+		}
+
+		if err != nil {
 			return RaftState{}, err
 		}
 	}
 
-	newLastIndex := kvpb.RaftIndex(entries[len(entries)-1].Index)
+	newLastIndex := kvpb.RaftIndex(entries[len(entries)-1].entry.Index)
 	// Delete any previously appended log entries which never committed.
 	if prev.LastIndex > 0 {
 		for i := newLastIndex + 1; i <= prev.LastIndex; i++ {
@@ -481,7 +513,7 @@ func logAppend(
 	}
 	return RaftState{
 		LastIndex: newLastIndex,
-		LastTerm:  kvpb.RaftTerm(entries[len(entries)-1].Term),
+		LastTerm:  kvpb.RaftTerm(entries[len(entries)-1].entry.Term),
 		ByteSize:  prev.ByteSize + diff.SysBytes,
 	}, nil
 }

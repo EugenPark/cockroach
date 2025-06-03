@@ -3,6 +3,7 @@ package logstore
 import (
 	"context"
 	"math"
+	"math/rand"
 	"slices"
 	"sort"
 	"time"
@@ -60,6 +61,11 @@ type Metronome struct {
 	inflightQueue timeoutQueue
 }
 
+type MetronomeEntry struct {
+	entry       raftpb.Entry
+	shouldFlush bool
+}
+
 func InitializeMetronome(replicaID roachpb.ReplicaID) Metronome {
 	return Metronome{
 		replicaID:     replicaID,
@@ -107,7 +113,34 @@ func (m *Metronome) ShouldRebalance(otherScheme []roachpb.ReplicaID) bool {
 	return false
 }
 
-func (m *Metronome) ShouldFlush(raftIndex uint64) bool {
+func (m *Metronome) FilterEntries(entries []raftpb.Entry, cb func(ent raftpb.Entry)) []MetronomeEntry {
+	min := 5   // milliseconds
+	max := 100 // milliseconds
+	randomMs := rand.Intn(max-min+1) + min
+	duration := time.Duration(randomMs) * time.Millisecond
+
+	filteredEntries := make([]MetronomeEntry, len(entries))
+
+	for _, ent := range entries {
+		shouldFlush := m.shouldFlush(ent.Index)
+
+		filteredEntries = append(filteredEntries, MetronomeEntry{
+			entry:       ent,
+			shouldFlush: shouldFlush,
+		})
+
+		if !shouldFlush {
+			m.inflightQueue.addTimeout(raftpb.Index(ent.Index), duration, func() {
+				// fmt.Println("Timeout")
+				cb(ent)
+			})
+		}
+	}
+
+	return filteredEntries
+}
+
+func (m *Metronome) shouldFlush(raftIndex uint64) bool {
 	// If schemes are not initialized flush
 	if m.schemes == nil || len(m.schemes) == 0 {
 		return true

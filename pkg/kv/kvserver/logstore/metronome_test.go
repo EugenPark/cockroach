@@ -128,7 +128,7 @@ func TestMetronomeShouldFlush(t *testing.T) {
 	}
 	index := uint64(11)
 
-	result := metronome.ShouldFlush(index)
+	result := metronome.shouldFlush(index)
 	expected := false
 
 	if expected != result {
@@ -137,7 +137,7 @@ func TestMetronomeShouldFlush(t *testing.T) {
 
 	index = uint64(12)
 
-	result = metronome.ShouldFlush(index)
+	result = metronome.shouldFlush(index)
 	expected = true
 
 	if expected != result {
@@ -171,3 +171,5 @@ func TestTimeoutQueue(t *testing.T) {
 		t.Errorf("Timeout cancellation not completed successfully")
 	}
 }
+
+// TODO: Test filter entries function

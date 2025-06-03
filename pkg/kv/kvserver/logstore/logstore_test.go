@@ -59,13 +59,13 @@ func TestRaftStorageWrites(t *testing.T) {
 		return ms.SysBytes
 	}
 
-	write := func(name string, hs raftpb.HardState, entries []raftpb.Entry) {
+	write := func(name string, hs raftpb.HardState, entries []MetronomeEntry) {
 		t.Helper()
 		var newState RaftState
 		batch := writeBatch(func(rw storage.ReadWriter) {
 			require.NoError(t, storeHardState(ctx, rw, sl, hs))
 			var err error
-			newState, err = logAppend(ctx, sl.RaftLogPrefix(), rw, state, entries, Metronome{})
+			newState, err = logAppend(ctx, sl.RaftLogPrefix(), rw, state, entries)
 			require.NoError(t, err)
 		})
 		state = newState
@@ -84,20 +84,20 @@ func TestRaftStorageWrites(t *testing.T) {
 
 	write("append (100,103]", raftpb.HardState{
 		Term: 21, Vote: 3, Commit: 100, Lead: 3, LeadEpoch: 5,
-	}, []raftpb.Entry{
-		{Index: 101, Term: 20},
-		{Index: 102, Term: 21},
-		{Index: 103, Term: 21},
+	}, []MetronomeEntry{
+		{entry: raftpb.Entry{Index: 101, Term: 20}, shouldFlush: true},
+		{entry: raftpb.Entry{Index: 102, Term: 21}, shouldFlush: true},
+		{entry: raftpb.Entry{Index: 103, Term: 21}, shouldFlush: true},
 	})
 	write("append (101,102] with overlap", raftpb.HardState{
 		Term: 22, Commit: 100,
-	}, []raftpb.Entry{
-		{Index: 102, Term: 22},
+	}, []MetronomeEntry{
+		{entry: raftpb.Entry{Index: 102, Term: 22}, shouldFlush: true},
 	})
-	write("append (102,105]", raftpb.HardState{}, []raftpb.Entry{
-		{Index: 103, Term: 22},
-		{Index: 104, Term: 22},
-		{Index: 105, Term: 22},
+	write("append (102,105]", raftpb.HardState{}, []MetronomeEntry{
+		{entry: raftpb.Entry{Index: 103, Term: 22}, shouldFlush: true},
+		{entry: raftpb.Entry{Index: 104, Term: 22}, shouldFlush: true},
+		{entry: raftpb.Entry{Index: 105, Term: 22}, shouldFlush: true},
 	})
 	truncate("truncate at 103", kvserverpb.RaftTruncatedState{Index: 103, Term: 22})
 	truncate("truncate all", kvserverpb.RaftTruncatedState{Index: 105, Term: 22})

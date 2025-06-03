@@ -1249,6 +1249,8 @@ func (r *Replica) handleRaftReadyRaftMuLocked(
 			}
 
 			r.mu.raftTracer.MaybeTraceAppend(app)
+			// TODO: split the append here and at timeouts
+			// Do we need to update the raft state? should in theory be updated in memory
 			if state, err = r.asLogStorage().appendRaftMuLocked(ctx, app, &stats.append); err != nil {
 				return stats, errors.Wrap(err, "while storing log entries")
 			}
@@ -3096,8 +3098,11 @@ func truncateEntryString(s string, maxChars int) string {
 }
 
 func (r *Replica) maybeRebalanceMetronome(schemes [][]roachpb.ReplicaID) {
-	// NOTE: IMO do not need to lock here as we are holding mu lock which is bigger
-	metronome := r.LogStorageRaftMuLocked().Metronome
+	// INFO: Locking not needed because already holding mu lock which is more powerful?
+	// r.raftMu.Lock()
+	// defer r.raftMu.Unlock()
+
+	metronome := &r.LogStorageRaftMuLocked().Metronome
 
 	if metronome.ShouldRebalance(schemes[0]) {
 		logstore.RebalanceQuorums(schemes)
