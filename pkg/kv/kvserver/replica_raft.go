@@ -3097,11 +3097,8 @@ func truncateEntryString(s string, maxChars int) string {
 	return res
 }
 
-func (r *Replica) maybeRebalanceMetronome(schemes [][]roachpb.ReplicaID) {
-	// INFO: Locking not needed because already holding mu lock which is more powerful?
-	// r.raftMu.Lock()
-	// defer r.raftMu.Unlock()
-
+// INFO: Requires RaftMu to be held
+func (r *Replica) maybeRebalanceMetronomeRaftMuLocked(schemes [][]roachpb.ReplicaID) {
 	metronome := &r.LogStorageRaftMuLocked().Metronome
 
 	if metronome.ShouldRebalance(schemes[0]) {

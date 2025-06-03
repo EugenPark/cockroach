@@ -382,6 +382,9 @@ func (sm *replicaStateMachine) maybeApplyConfChange(ctx context.Context, cmd *re
 
 	schemes := sm.r.Desc().GetAllQuorums()
 
+	sm.r.raftMu.Lock()
+	defer sm.r.raftMu.Unlock()
+
 	return sm.r.withRaftGroup(func(rn *raft.RawNode) (bool, error) {
 		// NB: `etcd/raft` configuration changes diverge from the official Raft way
 		// in that a configuration change becomes active when the corresponding log
@@ -438,7 +441,7 @@ func (sm *replicaStateMachine) maybeApplyConfChange(ctx context.Context, cmd *re
 		// encompassing the entire batch, again making sure that these batches are
 		// durably committed upon receipt.
 
-		sm.r.maybeRebalanceMetronome(schemes)
+		sm.r.maybeRebalanceMetronomeRaftMuLocked(schemes)
 		rn.ApplyConfChange(cc)
 		return true, nil
 	})

@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"context"
+	// "fmt"
 	"math"
 	"math/rand"
 	"slices"
@@ -131,7 +132,6 @@ func (m *Metronome) FilterEntries(entries []raftpb.Entry, cb func(ent raftpb.Ent
 
 		if !shouldFlush {
 			m.inflightQueue.addTimeout(raftpb.Index(ent.Index), duration, func() {
-				// fmt.Println("Timeout")
 				cb(ent)
 			})
 		}
