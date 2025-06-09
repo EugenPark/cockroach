@@ -58,7 +58,8 @@ func (r *replicaLogStorage) appendRaftMuLocked(
 ) (logstore.RaftState, error) {
 	state := r.stateRaftMuLocked()
 	cb := (*replicaSyncCallback)(r)
-	return r.raftMu.logStorage.StoreEntries(ctx, state, app, cb, stats)
+	m := r.store.metronome[r.RangeID]
+	return r.raftMu.logStorage.StoreEntries(ctx, state, app, cb, stats, &m)
 }
 
 // updateStateRaftMuLockedMuLocked updates the in-memory reflection of the raft

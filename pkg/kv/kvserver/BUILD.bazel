@@ -598,6 +598,7 @@ proto_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/kv/kvserver/kvserverpb:kvserverpb_proto",
+        "//pkg/raft/raftpb:raftpb_proto",
         "//pkg/roachpb:roachpb_proto",
         "//pkg/storage/enginepb:enginepb_proto",
         "@com_github_gogo_protobuf//gogoproto:gogo_proto",
@@ -612,6 +613,7 @@ go_proto_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/kv/kvserver/kvserverpb",
+        "//pkg/raft/raftpb",
         "//pkg/roachpb",
         "//pkg/storage/enginepb",
         "@com_github_gogo_protobuf//gogoproto",

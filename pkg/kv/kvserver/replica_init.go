@@ -226,7 +226,6 @@ func newUninitializedReplicaWithoutRaftGroup(
 		Settings:   store.cfg.Settings,
 		DisableSyncLogWriteToss: buildutil.CrdbTestBuild &&
 			store.TestingKnobs().DisableSyncLogWriteToss,
-		Metronome: logstore.InitializeMetronome(r.ReplicaID()),
 	}
 
 	r.splitQueueThrottle = util.Every(splitQueueThrottleDuration)
@@ -320,7 +319,6 @@ func (r *Replica) initRaftMuLockedReplicaMuLocked(
 	r.shMu.raftTruncState = s.TruncState
 	r.shMu.lastIndexNotDurable = s.LastEntryID.Index
 	r.shMu.lastTermNotDurable = s.LastEntryID.Term
-	// TODO: r.raftMu.logStorage.EntryCache.FillCache
 
 	// Initialize the Raft group. This may replace a Raft group that was installed
 	// for the uninitialized replica to process Raft requests or snapshots.
@@ -330,7 +328,6 @@ func (r *Replica) initRaftMuLockedReplicaMuLocked(
 	if err := r.initRaftGroupRaftMuLockedReplicaMuLocked(); err != nil {
 		return err
 	}
-
 	r.setDescLockedRaftMuLocked(r.AnnotateCtx(context.TODO()), desc)
 
 	// Only do this if there was a previous lease. This shouldn't be important
@@ -500,6 +497,8 @@ func (r *Replica) setDescLockedRaftMuLocked(ctx context.Context, desc *roachpb.R
 	r.shMu.state.Desc = desc
 	r.mu.replicaFlowControlIntegration.onDescChanged(ctx)
 	r.flowControlV2.OnDescChangedLocked(ctx, desc, r.mu.tenantID)
+
+	r.maybeRebalanceMetronomeRaftMuLocked(r.shMu.state.Desc.GetAllQuorums())
 
 	// Give the liveness and meta ranges high priority in the Raft scheduler, to
 	// avoid head-of-line blocking and high scheduling latency.

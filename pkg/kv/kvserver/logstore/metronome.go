@@ -1,8 +1,7 @@
 package logstore
 
 import (
-	"context"
-	// "fmt"
+	"fmt"
 	"math"
 	"math/rand"
 	"slices"
@@ -11,7 +10,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 )
 
 type timeout chan struct{}
@@ -55,23 +53,28 @@ func (tq *timeoutQueue) cancelTimeout(index raftpb.Index) {
 	tq.queue[index] = nil
 }
 
-// TODO: perhaps make these fields private?
 type Metronome struct {
-	replicaID     roachpb.ReplicaID
-	schemes       [][]roachpb.ReplicaID
-	inflightQueue timeoutQueue
+	replicaID        roachpb.ReplicaID
+	schemes          [][]roachpb.ReplicaID
+	inflightQueue    timeoutQueue
+	unflushedEntries map[raftpb.Index]raftpb.Entry
 }
 
 type MetronomeEntry struct {
-	entry       raftpb.Entry
-	shouldFlush bool
+	Entry       raftpb.Entry
+	ShouldFlush bool
 }
 
 func InitializeMetronome(replicaID roachpb.ReplicaID) Metronome {
 	return Metronome{
-		replicaID:     replicaID,
-		inflightQueue: newTimeoutQueue(),
+		replicaID:        replicaID,
+		inflightQueue:    newTimeoutQueue(),
+		unflushedEntries: make(map[raftpb.Index]raftpb.Entry),
 	}
+}
+
+func (m *Metronome) AddUnflushedEntry(ent raftpb.Entry) {
+	m.unflushedEntries[raftpb.Index(ent.Index)] = ent
 }
 
 func (m *Metronome) SetSchemes(schemes [][]roachpb.ReplicaID) {
@@ -89,6 +92,11 @@ func (m *Metronome) Commit(toApply []raftpb.Entry) {
 }
 
 func (m *Metronome) ShouldRebalance(otherScheme []roachpb.ReplicaID) bool {
+	// At least three replicas are required in crdb as such a quorum length of 2 is needed
+	if len(otherScheme) < 2 {
+		return false
+	}
+
 	if m.schemes == nil {
 		return true
 	}
@@ -100,6 +108,7 @@ func (m *Metronome) ShouldRebalance(otherScheme []roachpb.ReplicaID) bool {
 
 	freq := make(map[roachpb.ReplicaID]int, len(otherScheme))
 
+	// if the nodes are still the same set then do not rebalance
 	for _, v := range scheme {
 		freq[v]++
 	}
@@ -115,24 +124,26 @@ func (m *Metronome) ShouldRebalance(otherScheme []roachpb.ReplicaID) bool {
 }
 
 func (m *Metronome) FilterEntries(entries []raftpb.Entry, cb func(ent raftpb.Entry)) []MetronomeEntry {
-	min := 5   // milliseconds
-	max := 100 // milliseconds
+	min := 200  // milliseconds
+	max := 1000 // milliseconds
 	randomMs := rand.Intn(max-min+1) + min
 	duration := time.Duration(randomMs) * time.Millisecond
 
-	filteredEntries := make([]MetronomeEntry, len(entries))
+	filteredEntries := make([]MetronomeEntry, 0, len(entries))
 
 	for _, ent := range entries {
 		shouldFlush := m.shouldFlush(ent.Index)
 
 		filteredEntries = append(filteredEntries, MetronomeEntry{
-			entry:       ent,
-			shouldFlush: shouldFlush,
+			Entry:       ent,
+			ShouldFlush: shouldFlush,
 		})
 
 		if !shouldFlush {
+			m.unflushedEntries[raftpb.Index(ent.Index)] = ent
 			m.inflightQueue.addTimeout(raftpb.Index(ent.Index), duration, func() {
 				cb(ent)
+				delete(m.unflushedEntries, raftpb.Index(ent.Index))
 			})
 		}
 	}
@@ -148,7 +159,7 @@ func (m *Metronome) shouldFlush(raftIndex uint64) bool {
 
 	if raftIndex > math.MaxInt {
 		// When overflow flush to guarantee safety
-		log.Errorf(context.TODO(), "raftIndex %d is too large for int", raftIndex)
+		fmt.Printf("RaftIndex %d is too large for int\n", raftIndex)
 		return true
 	}
 

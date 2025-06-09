@@ -1339,7 +1339,8 @@ func (r *Replica) handleRaftReadyRaftMuLocked(
 	err = r.withRaftGroupLocked(func(raftGroup *raft.RawNode) (bool, error) {
 		r.deliverLocalRaftMsgsRaftMuLockedReplicaMuLocked(ctx, raftGroup)
 		raftGroup.AckApplied(toApply)
-		r.LogStorageRaftMuLocked().Metronome.Commit(toApply)
+		m := r.store.metronome[r.RangeID]
+		m.Commit(toApply)
 
 		if stats.apply.numConfChangeEntries > 0 {
 			// If the raft leader got removed, campaign on the leaseholder. Uses
@@ -3099,7 +3100,7 @@ func truncateEntryString(s string, maxChars int) string {
 
 // INFO: Requires RaftMu to be held
 func (r *Replica) maybeRebalanceMetronomeRaftMuLocked(schemes [][]roachpb.ReplicaID) {
-	metronome := &r.LogStorageRaftMuLocked().Metronome
+	metronome := r.store.metronome[r.RangeID]
 
 	if metronome.ShouldRebalance(schemes[0]) {
 		logstore.RebalanceQuorums(schemes)

@@ -9,6 +9,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -60,6 +61,39 @@ func (is Server) CollectChecksum(
 				return err
 			}
 			resp = &ccr
+			return nil
+		})
+	return resp, err
+}
+
+func (is Server) GetUntruncatedLog(
+	ctx context.Context, req *GetUntruncatedLogRequest,
+) (*GetUntruncatedLogResponse, error) {
+	resp := &GetUntruncatedLogResponse{}
+	err := is.execStoreCommand(ctx, req.StoreRequestHeader,
+		func(ctx context.Context, s *Store) error {
+			rangeID := req.RangeID
+			fromIndex := req.FromIndex
+			repl := s.GetReplicaIfExists(rangeID)
+
+			if repl == nil {
+				return nil
+			}
+
+			repl.raftMu.AssertHeld()
+
+			ents, err := s.GetUntruncatedLogEntriesRaftMu(ctx, repl.raftMu.stateLoader, rangeID, uint64(fromIndex))
+
+			if err != nil {
+				return err
+			}
+
+			ptrs := make([]*raftpb.Entry, len(ents))
+			for i := range ents {
+				ptrs[i] = &ents[i]
+			}
+
+			resp.Entries = ptrs
 			return nil
 		})
 	return resp, err

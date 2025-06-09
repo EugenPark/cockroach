@@ -68,18 +68,21 @@ type SideloadStorage interface {
 // The provided slice is not modified, though the returned slice may be backed
 // in parts or entirely by the same memory.
 func MaybeSideloadEntries(
-	ctx context.Context, input []raftpb.Entry, sideloaded SideloadStorage,
-) ([]raftpb.Entry, EntryStats, error) {
+	ctx context.Context, input []MetronomeEntry, sideloaded SideloadStorage,
+) ([]MetronomeEntry, EntryStats, error) {
 	var stats EntryStats
-	var output []raftpb.Entry
+	var output []MetronomeEntry
 	for i := range input {
-		typ, pri, err := raftlog.EncodingOf(input[i])
+		if !input[i].ShouldFlush {
+			continue
+		}
+		typ, pri, err := raftlog.EncodingOf(input[i].Entry)
 		if err != nil {
 			return nil, EntryStats{}, err
 		}
 		if !typ.IsSideloaded() {
 			stats.RegularEntries++
-			stats.RegularBytes += int64(len(input[i].Data))
+			stats.RegularBytes += int64(len(input[i].Entry.Data))
 			continue
 		}
 
@@ -89,12 +92,12 @@ func MaybeSideloadEntries(
 			// output slice with a copy of the input, so that we can replace
 			// individual entries.
 			log.Eventf(ctx, "copying entries slice of length %d", len(input))
-			output = append([]raftpb.Entry(nil), input...)
+			output = append([]MetronomeEntry(nil), input...)
 		}
 		outputEnt := &output[i]
 
 		// Unmarshal the command into an object that we can mutate.
-		e, err := raftlog.NewEntry(input[i])
+		e, err := raftlog.NewEntry(input[i].Entry)
 		if err != nil {
 			return nil, EntryStats{}, err
 		}
@@ -120,11 +123,11 @@ func MaybeSideloadEntries(
 			if err != nil {
 				return nil, EntryStats{}, errors.Wrap(err, "while marshaling stripped sideloaded command")
 			}
-			outputEnt.Data = data
+			outputEnt.Entry.Data = data
 		}
 
-		log.Eventf(ctx, "writing payload at index=%d term=%d", outputEnt.Index, outputEnt.Term)
-		if err := sideloaded.Put(ctx, kvpb.RaftIndex(outputEnt.Index), kvpb.RaftTerm(outputEnt.Term), dataToSideload); err != nil { // TODO could verify checksum here
+		log.Eventf(ctx, "writing payload at index=%d term=%d", outputEnt.Entry.Index, outputEnt.Entry.Term)
+		if err := sideloaded.Put(ctx, kvpb.RaftIndex(outputEnt.Entry.Index), kvpb.RaftTerm(outputEnt.Entry.Term), dataToSideload); err != nil { // TODO could verify checksum here
 			return nil, EntryStats{}, err
 		}
 

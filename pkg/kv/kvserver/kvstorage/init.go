@@ -397,13 +397,12 @@ func (r Replica) ID() storage.FullReplicaID {
 
 // Load loads the state necessary to instantiate a replica in memory.
 func (r Replica) Load(
-	ctx context.Context, eng storage.Reader, storeID roachpb.StoreID,
+	ctx context.Context, eng storage.Reader, sl stateloader.StateLoader, storeID roachpb.StoreID,
 ) (LoadedReplicaState, error) {
 	ls := LoadedReplicaState{
 		ReplicaID: r.ReplicaID,
 		hardState: r.hardState,
 	}
-	sl := stateloader.Make(r.Desc.RangeID)
 	var err error
 	if ls.TruncState, err = sl.LoadRaftTruncatedState(ctx, eng); err != nil {
 		return LoadedReplicaState{}, err
@@ -483,6 +482,7 @@ func loadReplicas(ctx context.Context, eng storage.Engine) ([]Replica, error) {
 	// This leads to the general desire to validate the internal consistency of the
 	// entire raft state (i.e. HardState, TruncatedState, Log).
 	{
+		// Load RaftReplicaID
 		logEvery := log.Every(10 * time.Second)
 		var i int
 		var msg kvserverpb.RaftReplicaID
@@ -500,6 +500,7 @@ func loadReplicas(ctx context.Context, eng storage.Engine) ([]Replica, error) {
 		}
 		log.Infof(ctx, "loaded replica ID for %d/%d replicas", len(s), len(s))
 
+		// Load HardState
 		logEvery = log.Every(10 * time.Second)
 		i = 0
 		var hs raftpb.HardState
@@ -515,7 +516,7 @@ func loadReplicas(ctx context.Context, eng storage.Engine) ([]Replica, error) {
 		}); err != nil {
 			return nil, err
 		}
-		log.Infof(ctx, "loaded Raft state for %d/%d replicas", len(s), len(s))
+		log.Infof(ctx, "loaded Raft state for %d/%d replicas", i, len(s))
 	}
 	sl := make([]Replica, 0, len(s))
 	for _, repl := range s {

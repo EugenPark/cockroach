@@ -77,10 +77,11 @@ func (r *replicaLogStorage) entriesLocked(
 	//
 	// TODO(pav-kv): we need better safety guardrails here. The log storage type
 	// can remember the readable bounds, and assert that reads do not cross them.
+	metronome := r.store.metronome[r.RangeID]
 	entries, _, loadedSize, err := logstore.LoadEntries(
 		r.AnnotateCtx(context.TODO()),
 		r.mu.stateLoader.StateLoader, r.store.TODOEngine(), r.RangeID,
-		r.store.raftEntryCache, r.raftMu.sideloaded, lo, hi, maxBytes,
+		r.store.raftEntryCache, r.raftMu.sideloaded, &metronome, lo, hi, maxBytes,
 		nil, // bytesAccount is not used when reading under Replica.mu
 	)
 	r.store.metrics.RaftStorageReadBytes.Inc(int64(loadedSize))
@@ -218,10 +219,11 @@ func (r *replicaRaftMuLogSnap) entriesRaftMuLocked(
 	// tries to read "unstable" entries that correspond to ongoing writes.
 	r.raftMu.AssertHeld()
 	// TODO(pav-kv): de-duplicate this code and the one where r.mu must be held.
+	metronome := r.store.metronome[r.RangeID]
 	entries, _, loadedSize, err := logstore.LoadEntries(
 		r.AnnotateCtx(context.TODO()),
 		r.raftMu.stateLoader.StateLoader, r.store.TODOEngine(), r.RangeID,
-		r.store.raftEntryCache, r.raftMu.sideloaded, lo, hi, maxBytes,
+		r.store.raftEntryCache, r.raftMu.sideloaded, &metronome, lo, hi, maxBytes,
 		&r.raftMu.bytesAccount,
 	)
 	r.store.metrics.RaftStorageReadBytes.Inc(int64(loadedSize))
