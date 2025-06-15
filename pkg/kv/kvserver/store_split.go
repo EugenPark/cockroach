@@ -133,7 +133,7 @@ func splitPreApply(
 	// Update the raft HardState with the new Commit value now that the
 	// replica is initialized (combining it with existing or default
 	// Term and Vote). This is the common case.
-	rsl := stateloader.Make(split.RightDesc.RangeID)
+	rsl := stateloader.Make(split.RightDesc.RangeID, nil)
 	if err := rsl.SynthesizeRaftState(ctx, readWriter); err != nil {
 		log.Fatalf(ctx, "%v", err)
 	}
@@ -240,7 +240,7 @@ func prepareRightReplicaForSplit(
 	// Finish initialization of the RHS replica.
 
 	state, err := kvstorage.LoadReplicaState(
-		ctx, r.store.TODOEngine(), r.StoreID(), &split.RightDesc, rightRepl.replicaID)
+		ctx, r.store.TODOEngine(), r.store.metronome[rightRepl.RangeID], r.StoreID(), &split.RightDesc, rightRepl.replicaID)
 	if err != nil {
 		log.Fatalf(ctx, "%v", err)
 	}

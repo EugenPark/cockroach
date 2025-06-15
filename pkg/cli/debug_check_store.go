@@ -166,7 +166,7 @@ func checkStoreRangeStats(
 	go func() {
 		if err := kvstorage.IterateRangeDescriptorsFromDisk(ctx, eng,
 			func(desc roachpb.RangeDescriptor) error {
-				inCh <- checkInput{eng: eng, desc: &desc, sl: stateloader.Make(desc.RangeID)}
+				inCh <- checkInput{eng: eng, desc: &desc, sl: stateloader.Make(desc.RangeID, nil)}
 				return nil
 			}); err != nil {
 			outCh <- checkResult{err: err}

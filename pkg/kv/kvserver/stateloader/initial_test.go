@@ -12,6 +12,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
@@ -50,7 +51,7 @@ func TestSynthesizeHardState(t *testing.T) {
 		func() {
 			batch := eng.NewBatch()
 			defer batch.Close()
-			rsl := Make(roachpb.RangeID(1))
+			rsl := Make(roachpb.RangeID(1), &logstore.Metronome{})
 
 			if test.OldHS != nil {
 				if err := rsl.SetHardState(context.Background(), batch, *test.OldHS); err != nil {

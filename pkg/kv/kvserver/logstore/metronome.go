@@ -12,6 +12,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 )
 
+// Timeout Logic
 type timeout chan struct{}
 
 type timeoutQueue struct {
@@ -25,7 +26,6 @@ func newTimeoutQueue() timeoutQueue {
 }
 
 func (tq *timeoutQueue) addTimeout(index raftpb.Index, duration time.Duration, onTimeout func()) {
-
 	timer := time.NewTimer(duration)
 
 	timeout := make(chan struct{})
@@ -53,28 +53,171 @@ func (tq *timeoutQueue) cancelTimeout(index raftpb.Index) {
 	tq.queue[index] = nil
 }
 
+// RaftLogMap Logic for allowing logs with gaps
+type RaftLogMap struct {
+	entries []raftpb.Entry
+}
+
+func NewRaftLogMap() RaftLogMap {
+	return RaftLogMap{
+		entries: make([]raftpb.Entry, 0, 0),
+	}
+}
+
+// Invariant:
+// - Entries are always ordered
+// - RLM log is ordered at any point
+func (rlm *RaftLogMap) Add(entries []raftpb.Entry) {
+	if len(entries) == 0 {
+		return
+	}
+
+	if len(rlm.entries) == 0 || rlm.entries[len(rlm.entries)-1].Index < entries[len(entries)-1].Index {
+		// Remove any stale entries
+		for i, ent := range rlm.entries {
+			if ent.Index >= entries[0].Index && ent.Term < entries[0].Term {
+				rlm.entries = rlm.entries[:i]
+				break
+			}
+		}
+	}
+
+	// Append new entries
+	rlm.entries = append(rlm.entries, entries...)
+}
+
+// func (rlm *RaftLogMap) Add(ent raftpb.Entry) {
+// 	newEntries := rlm.entries[:0]
+// 	for _, ownEnt := range rlm.entries {
+// 		// Stale entries
+// 		if ownEnt.Index >= ent.Index && ownEnt.Term < ent.Term {
+// 			continue
+// 		}
+//
+// 		newEntries = append(newEntries, ownEnt)
+// 	}
+// 	newEntries = append(newEntries, ent)
+// 	rlm.entries = newEntries
+// }
+
+func (rlm *RaftLogMap) Remove(index uint64) {
+	for i, ent := range rlm.entries {
+		if ent.Index == index {
+			rlm.entries = slices.Delete(rlm.entries, i, i+1)
+			// Invariant: There is only one entry at a time with the same index
+			break
+		}
+	}
+}
+
+func (rlm *RaftLogMap) GetLast() (raftpb.Entry, bool) {
+	if len(rlm.entries) == 0 {
+		return raftpb.Entry{}, false
+	}
+
+	ent := rlm.entries[len(rlm.entries)-1]
+	return ent, true
+}
+
+// Returns entries in [lo, hi)
+func (rlm *RaftLogMap) GetLog(lo, hi uint64) []raftpb.Entry {
+	var entries []raftpb.Entry
+
+	for _, ent := range rlm.entries {
+		if lo <= ent.Index && ent.Index < hi {
+			entries = append(entries, ent)
+		}
+	}
+
+	return entries
+}
+
+func (rlm *RaftLogMap) Compact(index uint64) {
+	keepEntries := rlm.entries[:0]
+
+	for _, ent := range rlm.entries {
+		if ent.Index <= index {
+			continue
+		}
+		keepEntries = append(keepEntries, ent)
+	}
+
+	rlm.entries = keepEntries
+}
+
+func (rlm *RaftLogMap) MergeRaftLogs(otherEntries []raftpb.Entry) {
+
+	if len(rlm.entries) == 0 || len(otherEntries) == 0 {
+		rlm.Add(otherEntries)
+		return
+	}
+
+	var mergedEntries []raftpb.Entry
+	var index uint64
+	if rlm.entries[0].Index < otherEntries[0].Index {
+		index = rlm.entries[0].Index
+	} else {
+		index = otherEntries[0].Index
+	}
+
+	var maxIndex uint64
+	if rlm.entries[len(rlm.entries)-1].Index > otherEntries[len(otherEntries)-1].Index {
+		maxIndex = rlm.entries[len(rlm.entries)-1].Index
+	} else {
+		maxIndex = otherEntries[len(otherEntries)-1].Index
+	}
+
+	j := 0
+	i := 0
+
+	// Invariant: Logs are ordered otherwise this might run incorrectly
+	// or indefinetely
+	for index <= maxIndex {
+		// Index found in original raftmaplog
+		if i < len(rlm.entries) && index == rlm.entries[i].Index {
+			mergedEntries = append(mergedEntries, rlm.entries[i])
+			i++
+			index++
+			continue
+		}
+
+		// Index found in other raftmaplog
+		if j < len(otherEntries) && index == otherEntries[j].Index {
+			mergedEntries = append(mergedEntries, otherEntries[j])
+			j++
+			index++
+			continue
+		}
+
+		// Did not find any matching entry meaning that we need to
+		// clear the entries found so far
+		mergedEntries = mergedEntries[:0]
+		index++
+	}
+
+	rlm.entries = mergedEntries
+}
+
+// Metronome Logic
 type Metronome struct {
 	replicaID        roachpb.ReplicaID
 	schemes          [][]roachpb.ReplicaID
 	inflightQueue    timeoutQueue
-	unflushedEntries map[raftpb.Index]raftpb.Entry
+	unflushedEntries RaftLogMap
 }
 
-type MetronomeEntry struct {
-	Entry       raftpb.Entry
-	ShouldFlush bool
-}
-
-func InitializeMetronome(replicaID roachpb.ReplicaID) Metronome {
-	return Metronome{
+func InitializeMetronome(replicaID roachpb.ReplicaID) *Metronome {
+	m := &Metronome{
 		replicaID:        replicaID,
 		inflightQueue:    newTimeoutQueue(),
-		unflushedEntries: make(map[raftpb.Index]raftpb.Entry),
+		unflushedEntries: NewRaftLogMap(),
 	}
+
+	return m
 }
 
-func (m *Metronome) AddUnflushedEntry(ent raftpb.Entry) {
-	m.unflushedEntries[raftpb.Index(ent.Index)] = ent
+func (m *Metronome) GetUnflushedEntries() *RaftLogMap {
+	return &m.unflushedEntries
 }
 
 func (m *Metronome) SetSchemes(schemes [][]roachpb.ReplicaID) {
@@ -86,6 +229,10 @@ func (m *Metronome) GetSchemes() [][]roachpb.ReplicaID {
 }
 
 func (m *Metronome) Commit(toApply []raftpb.Entry) {
+	if m == nil {
+		return
+	}
+
 	for _, ent := range toApply {
 		m.inflightQueue.cancelTimeout(raftpb.Index(ent.Index))
 	}
@@ -123,37 +270,38 @@ func (m *Metronome) ShouldRebalance(otherScheme []roachpb.ReplicaID) bool {
 	return false
 }
 
-func (m *Metronome) FilterEntries(entries []raftpb.Entry, cb func(ent raftpb.Entry)) []MetronomeEntry {
+func (m *Metronome) FilterEntries(entries []raftpb.Entry, cb func(ent raftpb.Entry)) ([]raftpb.Entry, raftpb.Entry) {
 	min := 200  // milliseconds
 	max := 1000 // milliseconds
 	randomMs := rand.Intn(max-min+1) + min
 	duration := time.Duration(randomMs) * time.Millisecond
 
-	filteredEntries := make([]MetronomeEntry, 0, len(entries))
+	unfilteredEntries := make([]raftpb.Entry, 0, len(entries))
+	filteredEntries := make([]raftpb.Entry, 0, len(entries))
+	lastEntry := entries[len(entries)-1]
 
 	for _, ent := range entries {
 		shouldFlush := m.shouldFlush(ent.Index)
 
-		filteredEntries = append(filteredEntries, MetronomeEntry{
-			Entry:       ent,
-			ShouldFlush: shouldFlush,
-		})
-
-		if !shouldFlush {
-			m.unflushedEntries[raftpb.Index(ent.Index)] = ent
+		if shouldFlush {
+			unfilteredEntries = append(unfilteredEntries, ent)
+		} else {
 			m.inflightQueue.addTimeout(raftpb.Index(ent.Index), duration, func() {
 				cb(ent)
-				delete(m.unflushedEntries, raftpb.Index(ent.Index))
+				m.unflushedEntries.Remove(ent.Index)
 			})
+			filteredEntries = append(filteredEntries, ent)
 		}
 	}
 
-	return filteredEntries
+	m.unflushedEntries.Add(filteredEntries)
+
+	return unfilteredEntries, lastEntry
 }
 
 func (m *Metronome) shouldFlush(raftIndex uint64) bool {
 	// If schemes are not initialized flush
-	if m.schemes == nil || len(m.schemes) == 0 {
+	if m == nil || m.schemes == nil || len(m.schemes) == 0 {
 		return true
 	}
 

@@ -1163,7 +1163,7 @@ type Store struct {
 	// diskMonitor provides metrics for the disk associated with this store.
 	diskMonitor *disk.Monitor
 
-	metronome map[roachpb.RangeID]logstore.Metronome
+	metronome map[roachpb.RangeID]*logstore.Metronome
 }
 
 var _ kv.Sender = &Store{}
@@ -1486,8 +1486,6 @@ func NewStore(
 	}
 	iot := ioThresholds{}
 	iot.Replace(nil, 1.0) // init as empty
-
-	// memEngine := storage.NewDefaultInMemForTesting(storage.DisableWAL())
 
 	s := &Store{
 		// NB: do not access these fields directly. Instead, use
@@ -2312,13 +2310,15 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 	//
 	// TODO(sep-raft-log): this will need to learn to stitch and reconcile data from
 	// both engines.
+	// TODO: Issue here is, we load the commit index here but recover the log later - maybe reafctor so that init happens at the same time - then we can
+	// adjust in case of truncated log
 	repls, err := kvstorage.LoadAndReconcileReplicas(ctx, s.TODOEngine())
 	if err != nil {
 		return err
 	}
 	logEvery := log.Every(10 * time.Second)
 
-	s.metronome = make(map[roachpb.RangeID]logstore.Metronome, len(repls))
+	s.metronome = make(map[roachpb.RangeID]*logstore.Metronome, len(repls))
 	for i, repl := range repls {
 		// Log progress regularly, but not for the first replica (we only want to
 		// log when this is slow). The last replica is logged after iteration.
@@ -2333,8 +2333,8 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 
 		s.metronome[repl.Desc.RangeID] = logstore.InitializeMetronome(repl.ReplicaID)
 
-		sl := stateloader.Make(repl.Desc.RangeID)
-		if err := s.recoverLog(context.TODO(), repl, sl); err != nil {
+		sl := stateloader.Make(repl.Desc.RangeID, s.metronome[repl.Desc.RangeID])
+		if err := s.recoverLog(context.TODO(), &repl, sl); err != nil {
 			return err
 		}
 
@@ -2343,6 +2343,7 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 		if err != nil {
 			return err
 		}
+
 		rep, err := newInitializedReplica(s, state, true /* waitForPrevLeaseToExpire */)
 		if err != nil {
 			return err
@@ -2471,20 +2472,21 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 }
 
 type recoveryResponse struct {
-	entries []*raftpb.Entry
-	err     error
+	entries  []*raftpb.Entry
+	snapshot *RecoverySnapshot
+	err      error
 }
 
 func (s *Store) recoverLog(
 	ctx context.Context,
-	repl kvstorage.Replica,
+	repl *kvstorage.Replica,
 	sl stateloader.StateLoader,
 ) error {
-	fmt.Println("Recover Log")
+	// fmt.Println("Recover Log")
 	// Immutable
 	replicas := repl.Desc.Replicas().Descriptors()
 	reader := s.TODOEngine().NewReader(storage.StandardDurability)
-	writer := s.TODOEngine().NewBatch()
+	// writer := s.TODOEngine().NewBatch()
 	var fromIndex raftpb.Index
 
 	// Mutable
@@ -2526,13 +2528,13 @@ func (s *Store) recoverLog(
 				return
 			}
 
-			responses <- recoveryResponse{entries: resp.Entries}
+			responses <- recoveryResponse{entries: resp.Entries, snapshot: resp.RecoverySnap}
 		}()
 	}
 
 	if inFlightRequests == 0 {
 		// We do not expect any answers so there is nothing to recover from
-		fmt.Println("Recover Log Done no requests")
+		// fmt.Println("Recover Log Done no requests")
 		return nil
 	}
 
@@ -2576,46 +2578,45 @@ func (s *Store) recoverLog(
 		}
 
 		// If the log was truncated we will not recover the log but instead wait for the next snapshot
-		if entries[0].Index > highestLogIndex {
-			fmt.Printf("Received a Truncated Log %d %d\n", entries[0].Index, highestLogIndex)
-			// Need to reset hardstate, truncated state and the entries saved to reflect our lost entry however we will recover in the next snapshot
-			if err := storage.MVCCBlindPutProto(
-				ctx,
-				s.TODOEngine().NewBatch(),
-				sl.RaftHardStateKey(),
-				hlc.Timestamp{}, /* timestamp */
-				&raftpb.HardState{},
-				storage.MVCCWriteOptions{}, /* opts */
-			); err != nil {
-				fmt.Printf("Failed to update Hardstate\n")
-				return err
-			}
+		// if entries[0].Index > highestLogIndex {
+		// 	fmt.Printf("Received a Truncated Log %d %d\n", entries[0].Index, highestLogIndex)
+		//
+		// 	// Need to reset hardstate, truncated state and the entries saved to reflect our lost entry however we will recover in the next snapshot
+		// 	if err := writer.ClearUnversioned(sl.RaftHardStateKey(), storage.ClearOptions{}); err != nil {
+		// 		fmt.Printf("Failed to update Hardstate\n")
+		// 		return err
+		// 	}
+		//
+		// 	if err := writer.ClearUnversioned(sl.RaftTruncatedStateKey(), storage.ClearOptions{}); err != nil {
+		// 		fmt.Printf("Failed to update TruncatedState\n")
+		// 		return err
+		// 	}
+		//
+		// 	startKey := keys.RaftLogKeyFromPrefix(raftLogPrefix, kvpb.RaftIndex(0))
+		// 	endKey := keys.RaftLogKeyFromPrefix(raftLogPrefix, kvpb.RaftIndex(math.MaxUint64))
+		// 	if _, _, _, _, err := storage.MVCCDeleteRange(ctx, s.TODOEngine().NewReadOnly(storage.StandardDurability), startKey, endKey, 0, hlc.Timestamp{}, storage.MVCCWriteOptions{}, false); err != nil {
+		// 		fmt.Printf("Failed to update Log Entries\n")
+		// 		return err
+		// 	}
+		//
+		// 	if err := writer.Commit(true); err != nil {
+		// 		fmt.Printf("Error: %#v", err)
+		// 		return err
+		// 	}
+		//
+		// 	repl.HardState = raftpb.HardState{}
+		//
+		// 	// fmt.Println("Recover Log Done Snapshot")
+		//
+		// 	return nil
+		// }
 
-			if err := storage.MVCCBlindPutProto(
-				ctx, writer, sl.RaftTruncatedStateKey(), hlc.Timestamp{}, &kvserverpb.RaftTruncatedState{}, storage.MVCCWriteOptions{},
-			); err != nil {
-				fmt.Printf("Failed to update TruncatedState\n")
-				return err
-			}
-
-			startKey := keys.RaftLogKeyFromPrefix(raftLogPrefix, kvpb.RaftIndex(0))
-			endKey := keys.RaftLogKeyFromPrefix(raftLogPrefix, kvpb.RaftIndex(math.MaxUint64))
-			if _, _, _, _, err := storage.MVCCDeleteRange(ctx, s.TODOEngine().NewReadOnly(storage.StandardDurability), startKey, endKey, 0, hlc.Timestamp{}, storage.MVCCWriteOptions{}, false); err != nil {
-				fmt.Printf("Failed to update Log Entries\n")
-				return err
-			}
-
-			if err := writer.Commit(true); err != nil {
-				fmt.Printf("Error: %#v", err)
-				return err
-			}
-
-			fmt.Println("Recover Log Done Snapshot")
-
+		if resp.snapshot != nil || entries[0].Index > highestLogIndex {
+			fmt.Printf("Received Snapshot %#v\n", *resp.snapshot.Snapshot)
 			return nil
 		}
 
-		if err := mergeLogs(ctx, raftLogMap, entries, &metronome, raftLogPrefix); err != nil {
+		if err := mergeLogs(ctx, raftLogMap, entries, metronome, raftLogPrefix); err != nil {
 			return err
 		}
 	}
@@ -2625,20 +2626,21 @@ func (s *Store) recoverLog(
 	return nil
 }
 
-func mergeLogs(ctx context.Context, a map[uint64]raftpb.Entry, b []*raftpb.Entry, metronome *logstore.Metronome, raftLogPrefix roachpb.Key) error {
-	for _, ent := range b {
-		// field already set
-		if _, ok := a[ent.Index]; ok {
-			continue
-		}
-
-		fmt.Printf("Recovering missing entry %d\n", ent.Index)
-		metronome.AddUnflushedEntry(*ent)
-
-		// TODO: sufficient to only store indices instead of the whole entry
-		a[ent.Index] = *ent
-	}
-	return nil
+func mergeLogs(ctx context.Context, a map[uint64]raftpb.Entry, b []*raftpb.Entry, m *logstore.Metronome, raftLogPrefix roachpb.Key) error {
+	// for _, ent := range b {
+	// 	// field already set
+	// 	if _, ok := a[ent.Index]; ok {
+	// 		continue
+	// 	}
+	//
+	// 	fmt.Printf("Recovering missing entry %d\n", ent.Index)
+	// 	m.GetUnflushedEntries().Add(ent)
+	//
+	// 	// TODO: sufficient to only store indices instead of the whole entry
+	// 	a[ent.Index] = *ent
+	// }
+	// return nil
+	return errRemoved
 }
 
 func (s *Store) GetUntruncatedLogEntriesRaftMu(ctx context.Context, sl stateloader.StateLoader, rangeID roachpb.RangeID, fromIndex uint64) ([]raftpb.Entry, error) {

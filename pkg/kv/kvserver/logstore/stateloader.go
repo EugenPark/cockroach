@@ -39,12 +39,14 @@ import (
 // packages, reshuffle or merge them, including this StateLoader.
 type StateLoader struct {
 	keys.RangeIDPrefixBuf
+	metronome *Metronome
 }
 
 // NewStateLoader creates a log StateLoader for the given range.
-func NewStateLoader(rangeID roachpb.RangeID) StateLoader {
+func NewStateLoader(rangeID roachpb.RangeID, metronome *Metronome) StateLoader {
 	return StateLoader{
 		RangeIDPrefixBuf: keys.MakeRangeIDPrefixBuf(rangeID),
+		metronome:        metronome,
 	}
 }
 
@@ -79,6 +81,7 @@ func (sl StateLoader) LoadLastEntryID(
 			log.Fatalf(ctx, "unable to decode Raft log index key: len(%s) < len(%s)", key.String(), prefix.String())
 		}
 		suffix := key[len(prefix):]
+
 		var err error
 		last.Index, err = keys.DecodeRaftLogKeyFromSuffix(suffix)
 		if err != nil {
@@ -95,11 +98,21 @@ func (sl StateLoader) LoadLastEntryID(
 		last.Term = kvpb.RaftTerm(entry.Term)
 	}
 
-	if last.Index == 0 {
+	lastInMem, exists := sl.metronome.GetUnflushedEntries().GetLast()
+
+	if last.Index == 0 && !exists {
 		// The log is empty, which means we are either starting from scratch
 		// or the entire log has been truncated away.
 		return ts, nil
 	}
+
+	// We had a not flushed entry which was higher
+	// Invariant: There is no lastInMem with lower index but higher term
+	if last.Index < kvpb.RaftIndex(lastInMem.Index) {
+		last.Index = kvpb.RaftIndex(lastInMem.Index)
+		last.Term = kvpb.RaftTerm(lastInMem.Term)
+	}
+
 	return last, nil
 }
 
@@ -146,6 +159,7 @@ func (sl StateLoader) LoadHardState(
 	if !found || err != nil {
 		return raftpb.HardState{}, err
 	}
+
 	return hs, nil
 }
 

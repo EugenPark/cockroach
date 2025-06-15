@@ -549,12 +549,13 @@ func (t *raftLogTruncator) tryEnactTruncations(
 	defer batch.Close()
 	if err := handleTruncatedStateBelowRaftPreApply(ctx, truncState,
 		pendingTruncs.mu.truncs[enactIndex].RaftTruncatedState,
-		stateLoader.StateLoader, batch,
+		stateLoader.StateLoader, batch, rangeID,
 	); err != nil {
 		log.Errorf(ctx, "while attempting to truncate raft log: %+v", err)
 		pendingTruncs.reset()
 		return
 	}
+
 	// Need to update the Replica state first. This requires iterating over all
 	// the enacted truncations.
 	pendingTruncs.iterateLocked(func(index int, trunc pendingTruncation) {

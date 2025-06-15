@@ -58,7 +58,7 @@ func runBenchmarkLogStore_StoreEntries(b *testing.B, bytes int64) {
 	s := LogStore{
 		RangeID:     rangeID,
 		Engine:      eng,
-		StateLoader: NewStateLoader(rangeID),
+		StateLoader: NewStateLoader(rangeID, nil),
 		EntryCache:  ec,
 		Settings:    st,
 	}
@@ -91,7 +91,7 @@ func runBenchmarkLogStore_StoreEntries(b *testing.B, bytes int64) {
 		m := raft.StorageAppend{Entries: ents}
 		cb := noopSyncCallback{}
 		var err error
-		rs, err = s.storeEntriesAndCommitBatch(ctx, rs, m, cb, stats, batch)
+		rs, err = s.storeEntriesAndCommitBatch(ctx, rs, m, cb, stats, batch, nil)
 		if err != nil {
 			b.Fatal(err)
 		}

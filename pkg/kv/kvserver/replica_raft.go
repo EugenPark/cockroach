@@ -2946,8 +2946,9 @@ func handleTruncatedStateBelowRaftPreApply(
 	next kvserverpb.RaftTruncatedState,
 	loader logstore.StateLoader,
 	writer storage.Writer,
+	rangeID roachpb.RangeID,
 ) error {
-	return logstore.Compact(ctx, prev, next, loader, writer)
+	return logstore.Compact(ctx, prev, next, loader, writer /*rangeID*/)
 }
 
 // shouldCampaignAfterConfChange returns true if the current replica should
@@ -3100,10 +3101,14 @@ func truncateEntryString(s string, maxChars int) string {
 
 // INFO: Requires RaftMu to be held
 func (r *Replica) maybeRebalanceMetronomeRaftMuLocked(schemes [][]roachpb.ReplicaID) {
-	metronome := r.store.metronome[r.RangeID]
+	m, ok := r.store.metronome[r.RangeID]
+	if !ok {
+		r.store.metronome[r.RangeID] = logstore.InitializeMetronome(r.replicaID)
+		m = r.store.metronome[r.RangeID]
+	}
 
-	if metronome.ShouldRebalance(schemes[0]) {
+	if m.ShouldRebalance(schemes[0]) {
 		logstore.RebalanceQuorums(schemes)
-		metronome.SetSchemes(schemes)
+		m.SetSchemes(schemes)
 	}
 }

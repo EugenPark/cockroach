@@ -40,6 +40,9 @@ go_test(
         "//pkg/testutils",
         "//pkg/util/leaktest",
         "//pkg/util/stop",
+        "//pkg/keys",
+        "//pkg/kv/kvserver/kvserverbase",
+        "//pkg/kv/kvserver/raftlog",
         "@com_github_stretchr_testify//require",
     ],
 )

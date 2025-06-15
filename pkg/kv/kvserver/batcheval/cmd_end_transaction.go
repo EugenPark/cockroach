@@ -1585,7 +1585,7 @@ func mergeTrigger(
 		if err != nil {
 			return result.Result{}, err
 		}
-		rhsLoader := stateloader.Make(merge.RightDesc.RangeID)
+		rhsLoader := stateloader.Make(merge.RightDesc.RangeID, nil)
 		rhsHint, err := rhsLoader.LoadGCHint(ctx, batch)
 		if err != nil {
 			return result.Result{}, err

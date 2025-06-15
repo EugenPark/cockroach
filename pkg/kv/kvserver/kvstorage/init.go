@@ -384,7 +384,7 @@ type Replica struct {
 	ReplicaID roachpb.ReplicaID
 	Desc      *roachpb.RangeDescriptor // nil for uninitialized Replica
 
-	hardState raftpb.HardState // internal to kvstorage, see migration in LoadAndReconcileReplicas
+	HardState raftpb.HardState // internal to kvstorage, see migration in LoadAndReconcileReplicas
 }
 
 // ID returns the FullReplicaID.
@@ -401,7 +401,7 @@ func (r Replica) Load(
 ) (LoadedReplicaState, error) {
 	ls := LoadedReplicaState{
 		ReplicaID: r.ReplicaID,
-		hardState: r.hardState,
+		hardState: r.HardState,
 	}
 	var err error
 	if ls.TruncState, err = sl.LoadRaftTruncatedState(ctx, eng); err != nil {
@@ -437,7 +437,7 @@ func (m replicaMap) setReplicaID(rangeID roachpb.RangeID, replicaID roachpb.Repl
 
 func (m replicaMap) setHardState(rangeID roachpb.RangeID, hs raftpb.HardState) {
 	ent := m.getOrMake(rangeID)
-	ent.hardState = hs
+	ent.HardState = hs
 	m[rangeID] = ent
 }
 

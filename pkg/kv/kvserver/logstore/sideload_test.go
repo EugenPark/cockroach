@@ -82,17 +82,10 @@ func TestSideloadingSideloadedStorage(t *testing.T) {
 	})
 }
 
-func newTestingSideloadStorage(eng storage.Engine) *DiskSideloadStorage {
-	return NewDiskSideloadStorage(
-		cluster.MakeTestingClusterSettings(), 1,
-		filepath.Join(eng.GetAuxiliaryDir(), "fake", "testing", "dir"),
-		rate.NewLimiter(rate.Inf, math.MaxInt64), eng)
-}
-
 // TODO(pavelkalinnikov): give these tests a good refactor.
 func testSideloadingSideloadedStorage(t *testing.T, eng storage.Engine) {
 	ctx := context.Background()
-	ss := newTestingSideloadStorage(eng)
+	ss := NewTestingSideloadStorage(eng)
 
 	assertExists := func(exists bool) {
 		t.Helper()
@@ -433,7 +426,7 @@ func TestRaftSSTableSideloadingInline(t *testing.T) {
 
 			eng := storage.NewDefaultInMemForTesting()
 			defer eng.Close()
-			ss := newTestingSideloadStorage(eng)
+			ss := NewTestingSideloadStorage(eng)
 			ec := raftentry.NewCache(1024) // large enough
 			if test.setup != nil {
 				test.setup(ec, ss)
@@ -519,8 +512,9 @@ func TestRaftSSTableSideloadingSideload(t *testing.T) {
 			ctx := context.Background()
 			eng := storage.NewDefaultInMemForTesting()
 			defer eng.Close()
-			sideloaded := newTestingSideloadStorage(eng)
-			postEnts, stats, err := MaybeSideloadEntries(ctx, test.preEnts, sideloaded)
+			sideloaded := NewTestingSideloadStorage(eng)
+			convertedEntries := test.preEnts
+			postEnts, stats, err := MaybeSideloadEntries(ctx, convertedEntries, sideloaded)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -579,7 +573,7 @@ func TestSideloadStorageSync(t *testing.T) {
 		require.NoError(t, err)
 		eng, err := storage.Open(ctx, env, cluster.MakeTestingClusterSettings(), storage.ForTesting)
 		require.NoError(t, err)
-		ss := newTestingSideloadStorage(eng)
+		ss := NewTestingSideloadStorage(eng)
 
 		// Put an entry which should trigger the lazy creation of the sideloaded
 		// directories structure, and create a file for this entry.
@@ -600,7 +594,7 @@ func TestSideloadStorageSync(t *testing.T) {
 		eng, err = storage.Open(ctx, env, cluster.MakeTestingClusterSettings(), storage.ForTesting)
 		require.NoError(t, err)
 		defer eng.Close()
-		ss = newTestingSideloadStorage(eng)
+		ss = NewTestingSideloadStorage(eng)
 
 		// The sideloaded directory must exist because all its parents are synced.
 		_, err = eng.Env().Stat(ss.Dir())
@@ -766,4 +760,11 @@ func TestMkdirAllAndSyncParentsErrors(t *testing.T) {
 			require.ErrorContains(t, mkdirAllAndSyncParents(memFS, path, os.ModePerm), "not a directory")
 		}
 	})
+}
+
+func NewTestingSideloadStorage(eng storage.Engine) *DiskSideloadStorage {
+	return NewDiskSideloadStorage(
+		cluster.MakeTestingClusterSettings(), 1,
+		filepath.Join(eng.GetAuxiliaryDir(), "fake", "testing", "dir"),
+		rate.NewLimiter(rate.Inf, math.MaxInt64), eng)
 }

@@ -31,7 +31,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
-	"github.com/cockroachdb/cockroach/pkg/util/iterutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/crlib/crtime"
@@ -230,22 +229,24 @@ func (s *LogStore) storeEntriesAndCommitBatch(
 			}
 		}
 
-		entriesToFlush := metronome.FilterEntries(m.Entries, delayedWrite)
-
-		thinEntries, entryStats, err := MaybeSideloadEntries(ctx, entriesToFlush, s.Sideload)
+		thinEntries, entryStats, err := MaybeSideloadEntries(ctx, m.Entries, s.Sideload)
 		if err != nil {
 			const expl = "during sideloading"
 			return RaftState{}, errors.Wrap(err, expl)
 		}
+
+		entriesToFlush, lastEntry := metronome.FilterEntries(thinEntries, delayedWrite)
+
 		stats.EntryStats.Add(entryStats) // TODO(pav-kv): just return the stats.
 		state.ByteSize += entryStats.SideloadedBytes
 
 		if state, err = logAppend(
-			ctx, raftLogPrefix, batch, state, thinEntries,
+			ctx, raftLogPrefix, batch, state, lastEntry, entriesToFlush, /*s.RangeID,*/
 		); err != nil {
 			const expl = "during append"
 			return RaftState{}, errors.Wrap(err, expl)
 		}
+
 		stats.End = crtime.NowMono()
 	}
 
@@ -441,11 +442,15 @@ func logAppend(
 	raftLogPrefix roachpb.Key,
 	rw storage.ReadWriter,
 	prev RaftState,
-	entries []MetronomeEntry,
+	lastEntry raftpb.Entry,
+	entries []raftpb.Entry,
+	// rangeID roachpb.RangeID,
 ) (RaftState, error) {
-	if len(entries) == 0 {
+	if len(entries) == 0 && lastEntry.Index == 0 && lastEntry.Term == 0 {
 		return prev, nil
 	}
+
+	// fmt.Printf("RangeID %d: Append till %d\n", rangeID, lastEntry.Index)
 
 	// NB: the Value and MVCCStats lifetime is this function, so we coalesce their
 	// allocation into the same pool.
@@ -462,19 +467,15 @@ func logAppend(
 
 	opts := storage.MVCCWriteOptions{Stats: diff, Category: fs.ReplicationReadCategory}
 
-	for _, mEnt := range entries {
-		key := keys.RaftLogKeyFromPrefix(raftLogPrefix, kvpb.RaftIndex(mEnt.Entry.Index))
-
-		if !mEnt.ShouldFlush {
-			continue
-		}
+	for _, ent := range entries {
+		key := keys.RaftLogKeyFromPrefix(raftLogPrefix, kvpb.RaftIndex(ent.Index))
 
 		var err error
 
-		if kvpb.RaftIndex(mEnt.Entry.Index) > prev.LastIndex {
-			err = storage.MVCCBlindPutProto(ctx, rw, key, hlc.Timestamp{}, &mEnt.Entry, opts)
+		if kvpb.RaftIndex(ent.Index) > prev.LastIndex {
+			err = storage.MVCCBlindPutProto(ctx, rw, key, hlc.Timestamp{}, &ent, opts)
 		} else {
-			err = storage.MVCCPutProto(ctx, rw, key, hlc.Timestamp{}, &mEnt.Entry, opts)
+			err = storage.MVCCPutProto(ctx, rw, key, hlc.Timestamp{}, &ent, opts)
 		}
 
 		if err != nil {
@@ -482,10 +483,11 @@ func logAppend(
 		}
 	}
 
-	newLastIndex := kvpb.RaftIndex(entries[len(entries)-1].Entry.Index)
+	lastIndex := kvpb.RaftIndex(lastEntry.Index)
+	lastTerm := kvpb.RaftTerm(lastEntry.Term)
 	// Delete any previously appended log entries which never committed.
 	if prev.LastIndex > 0 {
-		for i := newLastIndex + 1; i <= prev.LastIndex; i++ {
+		for i := lastIndex + 1; i <= prev.LastIndex; i++ {
 			// Note that the caller is in charge of deleting any sideloaded payloads
 			// (which they must only do *after* the batch has committed).
 			_, _, err := storage.MVCCDelete(ctx, rw, keys.RaftLogKeyFromPrefix(raftLogPrefix, i),
@@ -496,8 +498,8 @@ func logAppend(
 		}
 	}
 	return RaftState{
-		LastIndex: newLastIndex,
-		LastTerm:  kvpb.RaftTerm(entries[len(entries)-1].Entry.Term),
+		LastIndex: lastIndex,
+		LastTerm:  lastTerm,
 		ByteSize:  prev.ByteSize + diff.SysBytes,
 	}, nil
 }
@@ -514,6 +516,7 @@ func Compact(
 	next kvserverpb.RaftTruncatedState,
 	loader StateLoader,
 	writer storage.Writer,
+	// rangeID roachpb.RangeID,
 ) error {
 	if next.Index <= prev.Index {
 		// TODO(pav-kv): return an assertion failure error.
@@ -546,6 +549,21 @@ func Compact(
 			}
 		}
 	}
+
+	// TODO: write a better print to understand what is going on
+	// fmt.Printf("Metronome Log before compact of %d [", next.Index)
+	// for _, ent := range loader.metronome.GetUnflushedEntries().entries {
+	// 	fmt.Printf("%d, ", ent.Index)
+	// }
+	// fmt.Printf("]\n")
+	// fmt.Printf("Compact\n")
+	// fmt.Printf("RangeID %d: Compact Index %d\n", rangeID, next.Index)
+	loader.metronome.GetUnflushedEntries().Compact(uint64(next.Index))
+	// fmt.Printf("Metronome Log after compact of %d [", next.Index)
+	// for _, ent := range loader.metronome.GetUnflushedEntries().entries {
+	// 	fmt.Printf("%d, ", ent.Index)
+	// }
+	// fmt.Printf("]\n")
 
 	key := prefixBuf.RaftTruncatedStateKey()
 	var value roachpb.Value
@@ -599,11 +617,17 @@ func LoadTerm(
 	ctx context.Context,
 	rsl StateLoader,
 	eng storage.Engine,
+	metronome *Metronome,
 	rangeID roachpb.RangeID,
 	eCache *raftentry.Cache,
 	index kvpb.RaftIndex,
 ) (kvpb.RaftTerm, error) {
 	entry, found := eCache.Get(rangeID, index)
+	if found {
+		return kvpb.RaftTerm(entry.Term), nil
+	}
+
+	entry, found = metronome.GetUnflushedEntries().GetLast()
 	if found {
 		return kvpb.RaftTerm(entry.Term), nil
 	}
@@ -681,7 +705,7 @@ func LoadEntries(
 	rangeID roachpb.RangeID,
 	eCache *raftentry.Cache,
 	sideloaded SideloadStorage,
-	metronome *Metronome,
+	m *Metronome,
 	lo, hi kvpb.RaftIndex,
 	maxBytes uint64,
 	account *BytesAccount,
@@ -702,7 +726,6 @@ func LoadEntries(
 	for i, entry := range ents {
 		if sh.done || !sh.add(uint64(entry.Size())) {
 			// Remove the remaining entries, and dereference the memory they hold.
-			fmt.Println("Deleting")
 			ents = slices.Delete(ents, i, len(ents))
 			break
 		}
@@ -717,49 +740,27 @@ func LoadEntries(
 	if len(ents) == int(hi-lo) || sh.done {
 		return ents, cachedSize, 0, nil
 	}
-	//
-	// fmt.Printf("Cache miss here for RangeID %d, [%d, %d): [", rangeID, lo, hi)
-	// for _, ent := range ents {
-	// 	fmt.Printf("%d, ", ent.Index)
-	// }
-	// fmt.Printf("]\n")
 
 	// Scan over the log to find the requested entries in the range [lo, hi),
 	// stopping once we have enough.
 	expectedIndex := hitIndex
 
+	raftLog := NewRaftLogMap()
+	var flushedEntries []raftpb.Entry
 	scanFunc := func(ent raftpb.Entry) error {
-		// Exit early if we have any gaps that are not recoverable or it has been compacted.
-
-		for kvpb.RaftIndex(ent.Index) != expectedIndex {
-
-			unflushedEntry, ok := metronome.unflushedEntries[expectedIndex]
-
-			if !ok {
-				return iterutil.StopIteration()
-			}
-
-			ents = append(ents, unflushedEntry)
-			expectedIndex++
-		}
-		expectedIndex++
-
 		if typ, _, err := raftlog.EncodingOf(ent); err != nil {
 			return err
 		} else if typ.IsSideloaded() {
 			if ent, err = MaybeInlineSideloadedRaftCommand(
 				ctx, rangeID, ent, sideloaded, eCache,
 			); err != nil {
+				fmt.Printf("Weird error %s\n", err)
 				return err
 			}
 		}
 
-		if sh.add(uint64(ent.Size())) {
-			ents = append(ents, ent)
-		}
-		if sh.done {
-			return iterutil.StopIteration()
-		}
+		flushedEntries = append(flushedEntries, ent)
+
 		return nil
 	}
 
@@ -769,6 +770,31 @@ func LoadEntries(
 		return nil, 0, 0, err
 	}
 
+	raftLog.Add(flushedEntries)
+	raftLog.MergeRaftLogs(m.GetUnflushedEntries().GetLog(uint64(expectedIndex), uint64(hi)))
+	newLog := raftLog.entries
+
+	// Entry is out of date discard it
+	if len(newLog) > 0 && len(ents) > 0 && ents[len(ents)-1].Index+1 != newLog[0].Index {
+		ents = ents[:0]
+	}
+
+	for i, ent := range newLog {
+		if len(ents) > 0 && ents[len(ents)-1].Index == ent.Index && ents[len(ents)-1].Term == ent.Term {
+			fmt.Printf("WTF %d\n", i)
+			continue
+		}
+
+		if sh.add(uint64(ent.Size())) {
+			ents = append(ents, ent)
+		}
+
+		if sh.done {
+			break
+		}
+	}
+
+	fmt.Printf("Cache miss\n")
 	eCache.Add(rangeID, ents, false /* truncate */)
 
 	// Did the correct number of results come back? If so, we're all good.
@@ -776,12 +802,6 @@ func LoadEntries(
 	if len(ents) == int(hi-lo) || sh.done {
 		return ents, cachedSize, sh.bytes - cachedSize, nil
 	}
-
-	fmt.Printf("Error here missing %d compared to expected %d entries for [%d, %d): [", len(ents), hi-lo, lo, hi)
-	for _, ent := range ents {
-		fmt.Printf("%d, ", ent.Index)
-	}
-	fmt.Printf("]\n")
 
 	// Something went wrong, and we could not load enough entries.
 	ts, err := rsl.LoadRaftTruncatedState(ctx, reader)
@@ -793,5 +813,27 @@ func LoadEntries(
 	}
 	// We either have a gap in the log, or hi > LastIndex. Let the caller
 	// distinguish if they need to.
+	fmt.Printf("RangeID %d: requested indices in [%d, %d]:\n", rangeID, lo, hi)
+	fmt.Printf("Found: [")
+	for _, ent := range ents {
+		fmt.Printf("%d, ", ent.Index)
+	}
+	fmt.Printf("]\n")
+	fmt.Printf("Metronome Indices: [")
+	for _, ent := range m.GetUnflushedEntries().entries {
+		if ent.Index < uint64(lo) {
+			continue
+		}
+		fmt.Printf("%d, ", ent.Index)
+	}
+	fmt.Printf("]\n")
+	fmt.Printf("Flushed Indices: [")
+	for _, ent := range flushedEntries {
+		if ent.Index < uint64(lo) {
+			continue
+		}
+		fmt.Printf("%d, ", ent.Index)
+	}
+	fmt.Printf("]\n")
 	return nil, 0, 0, raft.ErrUnavailable
 }

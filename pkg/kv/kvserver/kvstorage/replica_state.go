@@ -39,11 +39,12 @@ type LoadedReplicaState struct {
 func LoadReplicaState(
 	ctx context.Context,
 	eng storage.Reader,
+	metronome *logstore.Metronome,
 	storeID roachpb.StoreID,
 	desc *roachpb.RangeDescriptor,
 	replicaID roachpb.ReplicaID,
 ) (LoadedReplicaState, error) {
-	sl := stateloader.Make(desc.RangeID)
+	sl := stateloader.Make(desc.RangeID, metronome)
 	id, err := sl.LoadRaftReplicaID(ctx, eng)
 	if err != nil {
 		return LoadedReplicaState{}, err
@@ -109,6 +110,7 @@ func (r LoadedReplicaState) check(storeID roachpb.StoreID) error {
 func CreateUninitializedReplica(
 	ctx context.Context,
 	eng storage.Engine,
+	metronome *logstore.Metronome,
 	storeID roachpb.StoreID,
 	rangeID roachpb.RangeID,
 	replicaID roachpb.ReplicaID,
@@ -137,13 +139,13 @@ func CreateUninitializedReplica(
 	//   the Term and Vote values for that older replica in the context of
 	//   this newer replica is harmless since it just limits the votes for
 	//   this replica.
-	sl := stateloader.Make(rangeID)
+	sl := stateloader.Make(rangeID, metronome)
 	if err := sl.SetRaftReplicaID(ctx, eng, replicaID); err != nil {
 		return err
 	}
 
 	// Make sure that storage invariants for this uninitialized replica hold.
 	uninitDesc := roachpb.RangeDescriptor{RangeID: rangeID}
-	_, err := LoadReplicaState(ctx, eng, storeID, &uninitDesc, replicaID)
+	_, err := LoadReplicaState(ctx, eng, metronome, storeID, &uninitDesc, replicaID)
 	return err
 }

@@ -7,6 +7,7 @@ syntax = "proto3";
 package cockroach.kv.kvserver;
 option go_package = "github.com/cockroachdb/cockroach/pkg/kv/kvserver";
 
+import "kv/kvserver/kvserverpb/state.proto";
 import "roachpb/data.proto";
 import "storage/enginepb/mvcc.proto";
 import "storage/enginepb/mvcc3.proto";
@@ -148,4 +149,13 @@ message GetUntruncatedLogRequest {
       [ (gogoproto.casttype) =
             "github.com/cockroachdb/cockroach/pkg/raft/raftpb.Index" ];
 }
-message GetUntruncatedLogResponse { repeated raftpb.Entry entries = 1; }
+
+message RecoverySnapshot {
+  cockroach.kv.kvserver.storagepb.ReplicaState replicaState = 1;
+  raftpb.Snapshot snapshot = 2;
+}
+
+message GetUntruncatedLogResponse {
+  repeated raftpb.Entry entries = 1;
+  RecoverySnapshot recoverySnap = 2;
+}

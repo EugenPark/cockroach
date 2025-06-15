@@ -218,7 +218,7 @@ func WriteInitialClusterData(
 				return err
 			}
 
-			sl := stateloader.Make(rangeID)
+			sl := stateloader.Make(rangeID, nil)
 			if err := sl.SetMVCCStats(ctx, batch, &computedStats); err != nil {
 				return err
 			}

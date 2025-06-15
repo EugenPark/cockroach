@@ -8,6 +8,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 )
 
+// Helper
 func compareQuorums(expected, result [][]roachpb.ReplicaID, t *testing.T) {
 	if len(expected) != len(result) {
 		t.Errorf("Quorums are of unequal length")
@@ -26,6 +27,7 @@ func compareQuorums(expected, result [][]roachpb.ReplicaID, t *testing.T) {
 	}
 }
 
+// Test Metronome Helper functions
 func TestCountOverlapping(t *testing.T) {
 	a := []roachpb.ReplicaID{1, 2, 3}
 	b := []roachpb.ReplicaID{1, 4, 5}
@@ -110,6 +112,7 @@ func TestSortQuorums(t *testing.T) {
 	compareQuorums(expected, quorums, t)
 }
 
+// Test Metronome
 func TestMetronomeShouldFlush(t *testing.T) {
 	metronome := Metronome{
 		replicaID: roachpb.ReplicaID(2),
@@ -145,6 +148,7 @@ func TestMetronomeShouldFlush(t *testing.T) {
 	}
 }
 
+// Test Timeoutqueue
 func TestTimeoutQueue(t *testing.T) {
 	tq := newTimeoutQueue()
 
@@ -172,4 +176,111 @@ func TestTimeoutQueue(t *testing.T) {
 	}
 }
 
-// TODO: Test filter entries function
+// Test RaftLogMap
+func TestRaftLogMap(t *testing.T) {
+	rlm := NewRaftLogMap()
+	entries := []raftpb.Entry{
+		{Index: 1, Data: []byte{1}, Term: 2},
+		{Index: 4, Data: []byte{4}, Term: 2},
+		{Index: 5, Data: []byte{5}, Term: 2},
+	}
+
+	// Test adding, getting and removing entries
+	rlm.Add(entries[:1])
+	actual := rlm.entries[0]
+
+	expected := entries[0]
+	if len(rlm.entries) != 1 || actual.Data[0] != expected.Data[0] {
+		t.Fatalf("Added entry with data %d != retrieved entry with data %d\n", expected.Data[0], actual.Data[0])
+	}
+
+	rlm.Remove(1)
+	if len(rlm.entries) != 0 {
+		t.Fatalf("Entry was not deleted properly\n")
+	}
+
+	// Test Adding in multiple entries with holes getting last entry and ordering of log
+	rlm.Add(entries)
+
+	actual, exists := rlm.GetLast()
+	expected = entries[len(entries)-1]
+	if !exists || actual.Data[0] != expected.Data[0] {
+		t.Fatalf("Failed to retrieve last entry got %d expected %d\n", actual.Data[0], expected.Data[0])
+	}
+
+	for i, ent := range rlm.entries {
+		if ent.Data[0] != entries[i].Data[0] {
+			t.Fatalf("Log is not ordered properly got %d expected %d\n", ent.Data[0], entries[i].Data[0])
+		}
+	}
+
+	scannedEntries := rlm.GetLog(2, 5)
+	if len(scannedEntries) != 1 || scannedEntries[0].Index != 4 {
+		t.Fatalf("Failed to retrieve log in range, got %d expected %d\n", scannedEntries[0].Index, 4)
+	}
+
+	// Test compaction
+	rlm.Compact(3)
+	for i, ent := range rlm.entries {
+		if ent.Data[0] != entries[i+1].Data[0] {
+			t.Fatalf("Compaction did not succeed got %d expected %d\n", ent.Data[0], entries[i+3].Data[0])
+		}
+	}
+
+	// Test removing stale entries
+	additionalEntries := []raftpb.Entry{
+		{Index: 7, Data: []byte{7}, Term: 2},
+		{Index: 8, Data: []byte{8}, Term: 2},
+	}
+	rlm.Add(additionalEntries)
+
+	overLappingEntry := []raftpb.Entry{
+		{
+			Index: 6, Data: []byte{6}, Term: 6,
+		},
+	}
+
+	rlm.Add(overLappingEntry)
+	lastEntry, exists := rlm.GetLast()
+	if !exists || lastEntry.Index != overLappingEntry[0].Index || lastEntry.Term != overLappingEntry[0].Term {
+		t.Fatalf("RemoveStale did not succeed got %#v expected %#v\n", lastEntry, overLappingEntry)
+	}
+}
+
+func TestMergeRaftLogs(t *testing.T) {
+	// Base RaftLogMap with some missing entries
+	rlm := NewRaftLogMap()
+	entries := []raftpb.Entry{
+		{Index: 3, Data: []byte{3}, Term: 1},
+		{Index: 4, Data: []byte{4}, Term: 1},
+		{Index: 6, Data: []byte{6}, Term: 1},
+		{Index: 8, Data: []byte{8}, Term: 1},
+	}
+	rlm.Add(entries)
+
+	// Other log has entries that can fill the gaps
+	otherEntries := []raftpb.Entry{
+		{Index: 1, Data: []byte{1}, Term: 1},
+		{Index: 7, Data: []byte{7}, Term: 1},
+	}
+
+	rlm.MergeRaftLogs(otherEntries)
+
+	// Expect merged log to start at index 1 and be fully contiguous to index 6
+	expectedIndices := []uint64{6, 7, 8}
+	expectedData := []byte{6, 7, 8}
+
+	actualLog := rlm.entries
+	if len(actualLog) != len(expectedIndices) {
+		t.Fatalf("Merged log length mismatch: got %d, expected %d", len(actualLog), len(expectedIndices))
+	}
+
+	for i, entry := range actualLog {
+		if entry.Index != expectedIndices[i] {
+			t.Fatalf("Log index mismatch at pos %d: got %d, expected %d", i, entry.Index, expectedIndices[i])
+		}
+		if entry.Data[0] != expectedData[i] {
+			t.Fatalf("Log data mismatch at pos %d: got %d, expected %d", i, entry.Data[0], expectedData[i])
+		}
+	}
+}
