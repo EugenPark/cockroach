@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"fmt"
 	"slices"
 	"time"
 
@@ -407,6 +408,7 @@ func (r Replica) Load(
 	if ls.TruncState, err = sl.LoadRaftTruncatedState(ctx, eng); err != nil {
 		return LoadedReplicaState{}, err
 	}
+	fmt.Printf("RangeID %d: Load\n", r.RangeID)
 	if ls.LastEntryID, err = sl.LoadLastEntryID(ctx, eng, ls.TruncState); err != nil {
 		return LoadedReplicaState{}, err
 	}

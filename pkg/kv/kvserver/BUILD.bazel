@@ -266,6 +266,7 @@ go_library(
         "@com_github_raduberinde_btree//:btree",
         "@io_opentelemetry_go_otel//attribute",
         "@org_golang_google_grpc//:grpc",
+        "@org_golang_x_exp//slices",
         "@org_golang_x_time//rate",
     ],
 )

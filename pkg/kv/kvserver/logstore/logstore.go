@@ -516,7 +516,6 @@ func Compact(
 	next kvserverpb.RaftTruncatedState,
 	loader StateLoader,
 	writer storage.Writer,
-	// rangeID roachpb.RangeID,
 ) error {
 	if next.Index <= prev.Index {
 		// TODO(pav-kv): return an assertion failure error.
@@ -550,20 +549,7 @@ func Compact(
 		}
 	}
 
-	// TODO: write a better print to understand what is going on
-	// fmt.Printf("Metronome Log before compact of %d [", next.Index)
-	// for _, ent := range loader.metronome.GetUnflushedEntries().entries {
-	// 	fmt.Printf("%d, ", ent.Index)
-	// }
-	// fmt.Printf("]\n")
-	// fmt.Printf("Compact\n")
-	// fmt.Printf("RangeID %d: Compact Index %d\n", rangeID, next.Index)
 	loader.metronome.GetUnflushedEntries().Compact(uint64(next.Index))
-	// fmt.Printf("Metronome Log after compact of %d [", next.Index)
-	// for _, ent := range loader.metronome.GetUnflushedEntries().entries {
-	// 	fmt.Printf("%d, ", ent.Index)
-	// }
-	// fmt.Printf("]\n")
 
 	key := prefixBuf.RaftTruncatedStateKey()
 	var value roachpb.Value
@@ -794,7 +780,6 @@ func LoadEntries(
 		}
 	}
 
-	fmt.Printf("Cache miss\n")
 	eCache.Add(rangeID, ents, false /* truncate */)
 
 	// Did the correct number of results come back? If so, we're all good.
@@ -811,8 +796,13 @@ func LoadEntries(
 		// The requested lo index has already been truncated.
 		return nil, 0, 0, raft.ErrCompacted
 	}
+
 	// We either have a gap in the log, or hi > LastIndex. Let the caller
 	// distinguish if they need to.
+	// TODO: Investigate: I once had a run where I failed to retrieve the entries
+	// Even though metronome and the disk seemed to have the correct entries respectively
+	// Might be even a off by one error such as returning too many values etc however would
+	// need to confirm this if this happens frequently
 	fmt.Printf("RangeID %d: requested indices in [%d, %d]:\n", rangeID, lo, hi)
 	fmt.Printf("Found: [")
 	for _, ent := range ents {

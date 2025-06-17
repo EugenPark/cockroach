@@ -7,6 +7,7 @@ package kvserver
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
@@ -198,6 +199,7 @@ func (s *Store) tryGetOrCreateReplica(
 	} else if repl != nil {
 		return repl, false, nil
 	}
+
 	// Now we have the guarantee that s.mu.replicasByRangeID does not contain
 	// rangeID, and only we can insert this rangeID. This also implies that the
 	// RangeTombstone in storage for this rangeID is "locked" because it can only
@@ -211,6 +213,7 @@ func (s *Store) tryGetOrCreateReplica(
 		// statemachine).
 		ctx, s.TODOEngine(), metronome, s.StoreID(), rangeID, replicaID,
 	); err != nil {
+		fmt.Printf("Probably group deleted error %s\n", err.Error())
 		return nil, false, err
 	}
 

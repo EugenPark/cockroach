@@ -3100,6 +3100,7 @@ func truncateEntryString(s string, maxChars int) string {
 }
 
 // INFO: Requires RaftMu to be held
+// TODO: needs refactoring perhaps it is better suited in store
 func (r *Replica) maybeRebalanceMetronomeRaftMuLocked(schemes [][]roachpb.ReplicaID) {
 	m, ok := r.store.metronome[r.RangeID]
 	if !ok {

@@ -167,7 +167,7 @@ var defaultRaftSchedulerShardSize = envutil.EnvOrDefaultInt("COCKROACH_SCHEDULER
 // 16 GB RAM = 64 MB  (~4 vCPUs)
 // 32 GB RAM = 128 MB (~8 vCPUs)
 // 64 GB RAM = 256 MB (~16 vCPUs)
-//
+
 // This is conservative, since the memory is not accounted for in memory budgets
 // nor via the --cache flag. However, it should be sufficient to achieve near
 // 100% cache hit rate for well-provisioned low-latency clusters with moderate
@@ -342,6 +342,8 @@ var SnapshotSendLimit = settings.RegisterIntSetting(
 	envutil.EnvOrDefaultInt64("COCKROACH_CONCURRENT_SNAPSHOT_SEND_LIMIT", 2),
 	settings.NonNegativeInt,
 )
+
+// var ErrLogStale = errors.New("Log is too far back to recover")
 
 // TestStoreConfig has some fields initialized with values relevant in tests.
 func TestStoreConfig(clock *hlc.Clock) StoreConfig {
@@ -2328,13 +2330,18 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 
 		if repl.Desc == nil {
 			// Uninitialized Replicas are not currently instantiated at store start.
+			fmt.Printf("Does this even happen\n")
 			continue
 		}
 
-		s.metronome[repl.Desc.RangeID] = logstore.InitializeMetronome(repl.ReplicaID)
+		s.metronome[repl.RangeID] = logstore.InitializeMetronome(repl.ReplicaID)
+		schemes := repl.Desc.GetAllQuorums()
+		logstore.RebalanceQuorums(schemes)
+		s.metronome[repl.RangeID].SetSchemes(schemes)
 
-		sl := stateloader.Make(repl.Desc.RangeID, s.metronome[repl.Desc.RangeID])
-		if err := s.recoverLog(context.TODO(), &repl, sl); err != nil {
+		sl := stateloader.Make(repl.RangeID, s.metronome[repl.RangeID])
+		err := s.recoverLog(context.TODO(), &repl, sl, s.metronome[repl.RangeID])
+		if err != nil {
 			return err
 		}
 
@@ -2472,7 +2479,7 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 }
 
 type recoveryResponse struct {
-	entries  []*raftpb.Entry
+	entries  []raftpb.Entry
 	snapshot *RecoverySnapshot
 	err      error
 }
@@ -2481,17 +2488,19 @@ func (s *Store) recoverLog(
 	ctx context.Context,
 	repl *kvstorage.Replica,
 	sl stateloader.StateLoader,
+	metronome *logstore.Metronome,
 ) error {
-	// fmt.Println("Recover Log")
 	// Immutable
 	replicas := repl.Desc.Replicas().Descriptors()
+	if len(replicas) < 2 {
+		return nil
+	}
 	reader := s.TODOEngine().NewReader(storage.StandardDurability)
-	// writer := s.TODOEngine().NewBatch()
-	var fromIndex raftpb.Index
+	writer := s.TODOEngine().NewBatch()
+	defer writer.Close()
 
 	// Mutable
 	responses := make(chan recoveryResponse, len(replicas)/2)
-	raftLogMap := make(map[uint64]raftpb.Entry)
 	var inFlightRequests uint64
 
 	// Helpers
@@ -2499,14 +2508,40 @@ func (s *Store) recoverLog(
 		return replica.NodeID == s.NodeID()
 	}
 
-	// Load Truncated State which is needed for determining which
-	// entries are needed from other nodes
-	ts, err := sl.LoadRaftTruncatedState(ctx, reader)
+	sidel := logstore.NewDiskSideloadStorage(
+		s.cfg.Settings,
+		repl.RangeID,
+		s.TODOEngine().GetAuxiliaryDir(),
+		s.limiters.BulkIOWriteRate,
+		s.TODOEngine(),
+	)
+
+	eCache := raftentry.NewCache(math.MaxUint64)
+
+	// Fetch own log from disk
+	ownEntries, err := s.GetUntruncatedLogEntriesRaftMu(ctx, sl, sidel, eCache, repl.RangeID, 0)
 	if err != nil {
-		fmt.Printf("Failed to load truncated state: %s\n", err.Error())
 		return err
 	}
-	fromIndex = ts.Index + 1
+
+	var lo, hi uint64
+	if len(ownEntries) > 0 {
+		lo = ownEntries[0].Index
+		hi = ownEntries[len(ownEntries)-1].Index
+	} else {
+		lo = 0
+		hi = math.MaxUint64
+	}
+
+	flushedIndices := make([]uint64, 0, len(ownEntries))
+	for _, ent := range ownEntries {
+		flushedIndices = append(flushedIndices, ent.Index)
+	}
+
+	// TODO: Add exclude entries as a param here
+	missingIndices := metronome.GetMissingIndices(lo, hi, flushedIndices)
+
+	fmt.Printf("RangeID %d: Missing entries %#v\n", repl.RangeID, missingIndices)
 
 	// Query other nodes for log entries
 	for _, replica := range replicas {
@@ -2518,9 +2553,7 @@ func (s *Store) recoverLog(
 		rep := replica // Deep copy works because all fields are values
 		inFlightRequests++
 		go func() {
-			// fmt.Printf("Contacting node: %d for Index %d\n", rep.NodeID, ts.Index+1)
-
-			resp, err := s.getUntruncatedLogFromReplica(ctx, rep, repl.RangeID, fromIndex)
+			resp, err := s.getUntruncatedLogFromReplica(ctx, rep, repl.RangeID, missingIndices)
 			if err != nil {
 				responses <- recoveryResponse{
 					err: err,
@@ -2538,30 +2571,9 @@ func (s *Store) recoverLog(
 		return nil
 	}
 
-	// fmt.Printf("Waiting for other servers now...\n")
-
-	// Fetch own log from disk
-	ownEntries, err := s.GetUntruncatedLogEntriesRaftMu(ctx, sl, repl.RangeID, 0)
-	if err != nil {
-		return err
-	}
-
-	var highestLogIndex uint64
-	if len(ownEntries) > 0 {
-		highestLogIndex = ownEntries[len(ownEntries)-1].Index
-	} else {
-		highestLogIndex = 0
-	}
-
-	for _, ent := range ownEntries {
-		raftLogMap[ent.Index] = ent
-	}
-
-	raftLogPrefix := sl.RaftLogPrefix()
-
-	metronome := s.metronome[repl.RangeID]
-
+	raftLogPrefix := append([]byte(nil), sl.RaftLogPrefix()...)
 	for resp := range responses {
+
 		// Bookkeeping
 		inFlightRequests--
 		if inFlightRequests == 0 {
@@ -2572,78 +2584,116 @@ func (s *Store) recoverLog(
 			return resp.err
 		}
 
+		// Fast Path
+		// TODO: Sideload the entries perhaps?
 		entries := resp.entries
-		if entries == nil || len(entries) == 0 {
+		if len(entries) > 0 {
+			fmt.Printf("RangeID %d: Taking fast path\n", repl.RangeID)
+			// fmt.Printf("RangeID %d: received entries %#v\n", repl.RangeID, entries)
+			var newEntries []raftpb.Entry
+			for _, ent := range entries {
+				if index := slices.Index(missingIndices, ent.Index); index != -1 {
+					missingIndices = slices.Delete(missingIndices, index, index+1)
+					newEntries = append(newEntries, ent)
+				}
+			}
+			entries = newEntries
+
+			thinEntries, _, err := logstore.MaybeSideloadEntries(ctx, entries, sidel)
+			if err != nil {
+				return err
+			}
+
+			metronome.GetUnflushedEntries().Add(thinEntries)
+			// metronome.GetUnflushedEntries().MergeRaftLogs(thinEntries)
 			continue
 		}
 
-		// If the log was truncated we will not recover the log but instead wait for the next snapshot
-		// if entries[0].Index > highestLogIndex {
-		// 	fmt.Printf("Received a Truncated Log %d %d\n", entries[0].Index, highestLogIndex)
-		//
-		// 	// Need to reset hardstate, truncated state and the entries saved to reflect our lost entry however we will recover in the next snapshot
-		// 	if err := writer.ClearUnversioned(sl.RaftHardStateKey(), storage.ClearOptions{}); err != nil {
-		// 		fmt.Printf("Failed to update Hardstate\n")
-		// 		return err
-		// 	}
-		//
-		// 	if err := writer.ClearUnversioned(sl.RaftTruncatedStateKey(), storage.ClearOptions{}); err != nil {
-		// 		fmt.Printf("Failed to update TruncatedState\n")
-		// 		return err
-		// 	}
-		//
-		// 	startKey := keys.RaftLogKeyFromPrefix(raftLogPrefix, kvpb.RaftIndex(0))
-		// 	endKey := keys.RaftLogKeyFromPrefix(raftLogPrefix, kvpb.RaftIndex(math.MaxUint64))
-		// 	if _, _, _, _, err := storage.MVCCDeleteRange(ctx, s.TODOEngine().NewReadOnly(storage.StandardDurability), startKey, endKey, 0, hlc.Timestamp{}, storage.MVCCWriteOptions{}, false); err != nil {
-		// 		fmt.Printf("Failed to update Log Entries\n")
-		// 		return err
-		// 	}
-		//
-		// 	if err := writer.Commit(true); err != nil {
-		// 		fmt.Printf("Error: %#v", err)
-		// 		return err
-		// 	}
-		//
-		// 	repl.HardState = raftpb.HardState{}
-		//
-		// 	// fmt.Println("Recover Log Done Snapshot")
-		//
-		// 	return nil
-		// }
-
-		if resp.snapshot != nil || entries[0].Index > highestLogIndex {
-			fmt.Printf("Received Snapshot %#v\n", *resp.snapshot.Snapshot)
+		// Slow Path
+		fmt.Printf("RangeID %d: Taking slow path\n", repl.RangeID)
+		if resp.snapshot == nil {
+			fmt.Printf("RangeID %d: WTF why is this nil\n", repl.RangeID)
 			return nil
 		}
 
-		if err := mergeLogs(ctx, raftLogMap, entries, metronome, raftLogPrefix); err != nil {
+		snap := resp.snapshot.Snapshot
+		state := resp.snapshot.ReplicaState
+
+		ts := &kvserverpb.RaftTruncatedState{
+			Index: kvpb.RaftIndex(snap.Metadata.Index),
+			Term:  kvpb.RaftTerm(snap.Metadata.Term),
+		}
+
+		hs, err := sl.LoadHardState(ctx, reader)
+		if err != nil {
+			fmt.Printf("Failed to load truncated state: %s\n", err.Error())
 			return err
 		}
+		hs.Commit = snap.Metadata.Index
+
+		// Write new hard state
+		if err := sl.SetHardState(ctx, writer, hs); err != nil {
+			return err
+		}
+
+		// Write new truncated state
+		if err := sl.SetRaftTruncatedState(ctx, writer, ts); err != nil {
+			return err
+		}
+
+		// Write application state
+		if _, err := sl.Save(ctx, writer, state); err != nil {
+			return err
+		}
+
+		// Clear log entries
+		// startKey := keys.RaftLogKeyFromPrefix(raftLogPrefix, kvpb.RaftIndex(1))
+		// endKey := keys.RaftLogKeyFromPrefix(raftLogPrefix, kvpb.RaftIndex(snap.Metadata.Index+1))
+		// if deletedKeys, _, _, _, err := storage.MVCCDeleteRange(ctx, writer, startKey, endKey, 0, hlc.Timestamp{}, storage.MVCCWriteOptions{}, false); err != nil {
+		// 	fmt.Printf("RangeID %d: Failed to update Log Entries\n", repl.RangeID)
+		// 	return err
+		// } else {
+		// 	fmt.Printf("RangeID %d: StartKey %s, EndKey %s,  Cleared %#v\n", repl.RangeID, startKey, endKey, deletedKeys)
+		// }
+		for _, ent := range ownEntries {
+			key := keys.RaftLogKeyFromPrefix(raftLogPrefix, kvpb.RaftIndex(ent.Index))
+			foundKey, _, err := storage.MVCCDelete(ctx, writer, key, hlc.Timestamp{}, storage.MVCCWriteOptions{})
+			if err != nil {
+				return err
+			}
+
+			if !foundKey {
+				fmt.Printf("Did not find key %s for ent %d\n", key, ent.Index)
+			}
+		}
+
+		// Clear metronome
+		metronome.GetUnflushedEntries().Compact(snap.Metadata.Index)
+
+		if err := writer.Commit(true); err != nil {
+			return err
+		}
+
+		break
 	}
 
-	fmt.Println("Recover Log Done")
+	metronome.GetUnflushedEntries().Sort()
+	fmt.Printf("RangeID %d: Unflushed log: [", repl.RangeID)
+	for _, ent := range metronome.GetUnflushedEntries().GetLog(lo, hi+1) {
+		fmt.Printf("%d, ", ent.Index)
+	}
+	fmt.Printf("]\n")
+
+	fmt.Printf("RangeID %d: Own Log: [", repl.RangeID)
+	for _, ent := range ownEntries {
+		fmt.Printf("%d, ", ent.Index)
+	}
+	fmt.Printf("]\n")
 
 	return nil
 }
 
-func mergeLogs(ctx context.Context, a map[uint64]raftpb.Entry, b []*raftpb.Entry, m *logstore.Metronome, raftLogPrefix roachpb.Key) error {
-	// for _, ent := range b {
-	// 	// field already set
-	// 	if _, ok := a[ent.Index]; ok {
-	// 		continue
-	// 	}
-	//
-	// 	fmt.Printf("Recovering missing entry %d\n", ent.Index)
-	// 	m.GetUnflushedEntries().Add(ent)
-	//
-	// 	// TODO: sufficient to only store indices instead of the whole entry
-	// 	a[ent.Index] = *ent
-	// }
-	// return nil
-	return errRemoved
-}
-
-func (s *Store) GetUntruncatedLogEntriesRaftMu(ctx context.Context, sl stateloader.StateLoader, rangeID roachpb.RangeID, fromIndex uint64) ([]raftpb.Entry, error) {
+func (s *Store) GetUntruncatedLogEntriesRaftMu(ctx context.Context, sl stateloader.StateLoader, sidel logstore.SideloadStorage, eCache *raftentry.Cache, rangeID roachpb.RangeID, fromIndex uint64) ([]raftpb.Entry, error) {
 	reader := s.TODOEngine().NewReader(storage.StandardDurability)
 
 	ts, err := sl.LoadRaftTruncatedState(ctx, reader)
@@ -2651,6 +2701,7 @@ func (s *Store) GetUntruncatedLogEntriesRaftMu(ctx context.Context, sl stateload
 		return nil, err
 	}
 
+	fmt.Printf("RangeID %d: GetUntruncated\n", rangeID)
 	lastEntID, err := sl.LoadLastEntryID(ctx, reader, ts)
 	if err != nil {
 		return nil, err
@@ -2661,15 +2712,15 @@ func (s *Store) GetUntruncatedLogEntriesRaftMu(ctx context.Context, sl stateload
 		if typ, _, err := raftlog.EncodingOf(ent); err != nil {
 			return err
 		} else if typ.IsSideloaded() {
-			fmt.Printf("Something went wrong entry should not be sideloaded!\n")
-			// if ent, err = logstore.MaybeInlineSideloadedRaftCommand(
-			// 	ctx, rangeID, ent, r.raftMu.logStorage.Sideload, r.raftMu.logStorage.EntryCache,
-			// ); err != nil {
-			// 	return err
-			// }
+			if ent, err = logstore.MaybeInlineSideloadedRaftCommand(
+				ctx, rangeID, ent, sidel, eCache,
+			); err != nil {
+				return err
+			}
 		}
 
 		ents = append(ents, ent)
+
 		return nil
 	}
 
@@ -2681,7 +2732,7 @@ func (s *Store) GetUntruncatedLogEntriesRaftMu(ctx context.Context, sl stateload
 }
 
 func (s *Store) getUntruncatedLogFromReplica(
-	ctx context.Context, replica roachpb.ReplicaDescriptor, rangeID roachpb.RangeID, fromIndex raftpb.Index,
+	ctx context.Context, replica roachpb.ReplicaDescriptor, rangeID roachpb.RangeID, missingIndices []uint64,
 ) (GetUntruncatedLogResponse, error) {
 	conn, err := s.cfg.NodeDialer.Dial(ctx, replica.NodeID, rpc.DefaultClass)
 	if err != nil {
@@ -2692,7 +2743,7 @@ func (s *Store) getUntruncatedLogFromReplica(
 	req := &GetUntruncatedLogRequest{
 		StoreRequestHeader: StoreRequestHeader{NodeID: replica.NodeID, StoreID: replica.StoreID},
 		RangeID:            rangeID,
-		FromIndex:          fromIndex,
+		MissingIndices:     missingIndices,
 	}
 	resp, err := client.GetUntruncatedLog(ctx, req)
 	if err != nil {

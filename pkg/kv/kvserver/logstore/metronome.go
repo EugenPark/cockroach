@@ -64,6 +64,15 @@ func NewRaftLogMap() RaftLogMap {
 	}
 }
 
+// TODO: Maybe add a more performant add for the case that entries might be duplicated
+
+// TODO: Write a test for this
+func (rlm *RaftLogMap) Sort() {
+	slices.SortFunc(rlm.entries, func(a, b raftpb.Entry) int {
+		return int(a.Index) - int(b.Index)
+	})
+}
+
 // Invariant:
 // - Entries are always ordered
 // - RLM log is ordered at any point
@@ -85,20 +94,6 @@ func (rlm *RaftLogMap) Add(entries []raftpb.Entry) {
 	// Append new entries
 	rlm.entries = append(rlm.entries, entries...)
 }
-
-// func (rlm *RaftLogMap) Add(ent raftpb.Entry) {
-// 	newEntries := rlm.entries[:0]
-// 	for _, ownEnt := range rlm.entries {
-// 		// Stale entries
-// 		if ownEnt.Index >= ent.Index && ownEnt.Term < ent.Term {
-// 			continue
-// 		}
-//
-// 		newEntries = append(newEntries, ownEnt)
-// 	}
-// 	newEntries = append(newEntries, ent)
-// 	rlm.entries = newEntries
-// }
 
 func (rlm *RaftLogMap) Remove(index uint64) {
 	for i, ent := range rlm.entries {
@@ -236,6 +231,41 @@ func (m *Metronome) Commit(toApply []raftpb.Entry) {
 	for _, ent := range toApply {
 		m.inflightQueue.cancelTimeout(raftpb.Index(ent.Index))
 	}
+}
+
+func (m *Metronome) GetMissingIndices(lo, hi uint64, flushedIndices []uint64) []uint64 {
+	var missingIndices []uint64
+
+	// Discover lower bounds
+	lowerBound := lo
+	for lowerBound > 0 {
+		lowerBound--
+		if m.shouldFlush(lowerBound) {
+			lowerBound++
+			break
+		}
+	}
+
+	// Discover higher bounds
+	higherBound := hi
+	for higherBound < math.MaxUint64 {
+		higherBound++
+		if m.shouldFlush(higherBound) {
+			higherBound--
+			break
+		}
+	}
+
+	// Iterate from lowerBound to higherBound and find the missing entries
+	for i := lowerBound; i <= higherBound; i++ {
+		if slices.Contains(flushedIndices, i) || m.shouldFlush(i) {
+			continue
+		}
+
+		missingIndices = append(missingIndices, i)
+	}
+
+	return missingIndices
 }
 
 func (m *Metronome) ShouldRebalance(otherScheme []roachpb.ReplicaID) bool {

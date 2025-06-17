@@ -7,7 +7,6 @@ package kvserver
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
@@ -16,6 +15,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
+	"golang.org/x/exp/slices"
 )
 
 // Server implements PerReplicaServer.
@@ -75,7 +75,7 @@ func (is Server) GetUntruncatedLog(
 	err := is.execStoreCommand(ctx, req.StoreRequestHeader,
 		func(ctx context.Context, s *Store) error {
 			rangeID := req.RangeID
-			fromIndex := req.FromIndex
+			missingIndices := req.MissingIndices
 			repl := s.GetReplicaIfExists(rangeID)
 
 			if repl == nil {
@@ -84,42 +84,39 @@ func (is Server) GetUntruncatedLog(
 
 			repl.raftMu.AssertHeld()
 
-			ts, err := repl.raftMu.stateLoader.LoadRaftTruncatedState(ctx, s.TODOEngine().NewReader(storage.StandardDurability))
-			if err != nil {
-				return err
-			}
-
-			fmt.Printf("Sending a snapshot\n")
+			// Snapshot
 			snapID := uuid.MakeV4()
 			snap, err := repl.GetSnapshot(ctx, snapID)
 
 			if err != nil {
 				return err
 			}
-
 			defer snap.Close()
 
-			resp.RecoverySnap = &RecoverySnapshot{
-				ReplicaState: &snap.State,
-				Snapshot:     &snap.RaftSnap,
+			if snap != nil {
+				resp.RecoverySnap = &RecoverySnapshot{
+					ReplicaState: snap.State,
+					Snapshot:     snap.RaftSnap,
+				}
 			}
 
-			fmt.Printf("Sending entries: %d %d\n", ts.Index, fromIndex)
-			ents, err := s.GetUntruncatedLogEntriesRaftMu(ctx, repl.raftMu.stateLoader, rangeID, uint64(fromIndex))
-
+			// Missing entries
+			ents, err := s.GetUntruncatedLogEntriesRaftMu(ctx, repl.raftMu.stateLoader, repl.raftMu.sideloaded, repl.raftMu.logStorage.EntryCache, rangeID, missingIndices[0])
 			if err != nil {
 				return err
 			}
 
-			ptrs := make([]*raftpb.Entry, len(ents))
+			missingEntries := make([]raftpb.Entry, 0, len(missingIndices))
 			for i := range ents {
-				ptrs[i] = &ents[i]
+				if slices.Contains(missingIndices, ents[i].Index) {
+					missingEntries = append(missingEntries, ents[i])
+				}
 			}
 
-			resp.Entries = ptrs
-
+			resp.Entries = missingEntries
 			return nil
 		})
+
 	return resp, err
 }
 

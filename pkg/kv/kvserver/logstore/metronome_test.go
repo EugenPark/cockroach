@@ -148,6 +148,88 @@ func TestMetronomeShouldFlush(t *testing.T) {
 	}
 }
 
+func TestGetMissingIndices(t *testing.T) {
+	metronome := Metronome{
+		replicaID: roachpb.ReplicaID(1),
+		schemes: [][]roachpb.ReplicaID{
+			{1, 2, 3},
+			{1, 4, 5},
+			{2, 3, 4},
+			{1, 3, 5},
+			{1, 2, 4},
+			{2, 3, 5},
+			{1, 3, 4},
+			{1, 2, 5},
+			{3, 4, 5},
+			{2, 4, 5},
+		},
+	}
+
+	// Test normal case without bound violations
+	expected := []uint64{
+		5, 8, 9,
+	}
+	actual := metronome.GetMissingIndices(5, 10)
+
+	if len(expected) != len(actual) {
+		t.Fatalf("Indices do not match up. Expected %#v Got %#v\n", expected, actual)
+	}
+
+	for i := range actual {
+		if expected[i] != actual[i] {
+			t.Fatalf("Index does not match up. Expected %d Got %d\n", expected[i], actual[i])
+		}
+	}
+
+	// Test case with upper bound violations
+	expected = []uint64{
+		5, 8, 9,
+	}
+	actual = metronome.GetMissingIndices(5, 7)
+
+	if len(expected) != len(actual) {
+		t.Fatalf("Indices do not match up. Expected %#v Got %#v\n", expected, actual)
+	}
+
+	for i := range actual {
+		if expected[i] != actual[i] {
+			t.Fatalf("Index does not match up. Expected %d Got %d\n", expected[i], actual[i])
+		}
+	}
+
+	// Test case with lower bound violations
+	expected = []uint64{
+		8, 9, 12,
+	}
+	actual = metronome.GetMissingIndices(10, 13)
+
+	if len(expected) != len(actual) {
+		t.Fatalf("Indices do not match up. Expected %#v Got %#v\n", expected, actual)
+	}
+
+	for i := range actual {
+		if expected[i] != actual[i] {
+			t.Fatalf("Index does not match up. Expected %d Got %d\n", expected[i], actual[i])
+		}
+	}
+
+	// Test case with both bound violations
+	expected = []uint64{
+		2, 5, 8, 9,
+	}
+	actual = metronome.GetMissingIndices(3, 7)
+
+	if len(expected) != len(actual) {
+		t.Fatalf("Indices do not match up. Expected %#v Got %#v\n", expected, actual)
+	}
+
+	for i := range actual {
+		if expected[i] != actual[i] {
+			t.Fatalf("Index does not match up. Expected %d Got %d\n", expected[i], actual[i])
+		}
+	}
+}
+
 // Test Timeoutqueue
 func TestTimeoutQueue(t *testing.T) {
 	tq := newTimeoutQueue()

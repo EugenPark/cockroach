@@ -145,17 +145,16 @@ message GetUntruncatedLogRequest {
     (gogoproto.casttype) =
         "github.com/cockroachdb/cockroach/pkg/roachpb.RangeID"
   ];
-  int64 from_index = 3
-      [ (gogoproto.casttype) =
-            "github.com/cockroachdb/cockroach/pkg/raft/raftpb.Index" ];
+  repeated uint64 missing_indices = 3;
 }
 
 message RecoverySnapshot {
-  cockroach.kv.kvserver.storagepb.ReplicaState replicaState = 1;
-  raftpb.Snapshot snapshot = 2;
+  cockroach.kv.kvserver.storagepb.ReplicaState replicaState = 1
+      [ (gogoproto.nullable) = false ];
+  raftpb.Snapshot snapshot = 2 [ (gogoproto.nullable) = false ];
 }
 
 message GetUntruncatedLogResponse {
-  repeated raftpb.Entry entries = 1;
-  RecoverySnapshot recoverySnap = 2;
+  repeated raftpb.Entry entries = 1 [ (gogoproto.nullable) = false ];
+  RecoverySnapshot recovery_snap = 2;
 }

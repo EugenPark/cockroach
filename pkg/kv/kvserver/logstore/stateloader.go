@@ -7,6 +7,7 @@ package logstore
 
 import (
 	"context"
+	"fmt"
 	"math"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -100,13 +101,16 @@ func (sl StateLoader) LoadLastEntryID(
 
 	lastInMem, exists := sl.metronome.GetUnflushedEntries().GetLast()
 
+	fmt.Printf("Last Index and In mem repr %d, %d\n", last.Index, lastInMem.Index)
+
 	if last.Index == 0 && !exists {
 		// The log is empty, which means we are either starting from scratch
 		// or the entire log has been truncated away.
+		fmt.Printf("Truncated State %#v\n", ts)
 		return ts, nil
 	}
 
-	// We had a not flushed entry which was higher
+	// We had a not-flushed entry which was higher
 	// Invariant: There is no lastInMem with lower index but higher term
 	if last.Index < kvpb.RaftIndex(lastInMem.Index) {
 		last.Index = kvpb.RaftIndex(lastInMem.Index)
