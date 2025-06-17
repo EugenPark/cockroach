@@ -2335,14 +2335,14 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 		logstore.RebalanceQuorums(schemes)
 		s.metronome[repl.RangeID].SetSchemes(schemes)
 
-		sl := stateloader.Make(repl.RangeID, s.metronome[repl.RangeID])
+		sl := stateloader.Make(repl.RangeID)
 		err := s.recoverLog(context.TODO(), &repl, sl, s.metronome[repl.RangeID])
 		if err != nil {
 			return err
 		}
 
 		// TODO(pavelkalinnikov): integrate into kvstorage.LoadAndReconcileReplicas.
-		state, err := repl.Load(ctx, s.TODOEngine(), sl, s.StoreID())
+		state, err := repl.Load(ctx, s.TODOEngine(), sl, s.StoreID(), s.metronome[repl.RangeID])
 		if err != nil {
 			return err
 		}
@@ -2666,7 +2666,7 @@ func (s *Store) GetUntruncatedLogEntriesRaftMu(ctx context.Context, sl stateload
 		return nil, err
 	}
 
-	lastEntID, err := sl.LoadLastEntryID(ctx, reader, ts)
+	lastEntID, err := sl.LoadLastEntryID(ctx, reader, ts, s.metronome[rangeID])
 	if err != nil {
 		return nil, err
 	}
@@ -4513,43 +4513,10 @@ func (s *storeForTruncatorImpl) getEngine() storage.Engine {
 	return (*Store)(s).TODOEngine()
 }
 
+func (s *storeForTruncatorImpl) getMetronome(rangeID roachpb.RangeID) *logstore.Metronome {
+	return (*Store)(s).metronome[rangeID]
+}
+
 func init() {
 	tracing.RegisterTagRemapping("s", "store")
 }
-
-//
-// func getUntruncatedRaftEntries(ctx context.Context, reader storage.Reader, sideloaded logstore.SideloadStorage, rangeID roachpb.RangeID) ([]raftpb.Entry, error) {
-// 	sl := logstore.NewStateLoader(rangeID)
-//
-// 	ts, err := sl.LoadRaftTruncatedState(ctx, reader)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-//
-// 	lastEntID, err := sl.LoadLastEntryID(ctx, reader, ts)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-//
-// 	var ents []raftpb.Entry
-// 	scanFunc := func(ent raftpb.Entry) error {
-// 		if typ, _, err := raftlog.EncodingOf(ent); err != nil {
-// 			return err
-// 		} else if typ.IsSideloaded() {
-// 			if ent, err = logstore.MaybeInlineSideloadedRaftCommand(
-// 				ctx, rangeID, ent, sideloaded, raftentry.NewCache(0), /* Empty because we have no Cache at the minute */
-// 			); err != nil {
-// 				return err
-// 			}
-// 		}
-//
-// 		ents = append(ents, ent)
-// 		return nil
-// 	}
-//
-// 	if err := raftlog.Visit(ctx, reader, rangeID, 0, lastEntID.Index+1, scanFunc); err != nil {
-// 		return nil, err
-// 	}
-//
-// 	return ents, nil
-// }

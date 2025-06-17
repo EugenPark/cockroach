@@ -14,6 +14,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -384,7 +385,7 @@ type Replica struct {
 	ReplicaID roachpb.ReplicaID
 	Desc      *roachpb.RangeDescriptor // nil for uninitialized Replica
 
-	HardState raftpb.HardState // internal to kvstorage, see migration in LoadAndReconcileReplicas
+	hardState raftpb.HardState // internal to kvstorage, see migration in LoadAndReconcileReplicas
 }
 
 // ID returns the FullReplicaID.
@@ -397,17 +398,17 @@ func (r Replica) ID() storage.FullReplicaID {
 
 // Load loads the state necessary to instantiate a replica in memory.
 func (r Replica) Load(
-	ctx context.Context, eng storage.Reader, sl stateloader.StateLoader, storeID roachpb.StoreID,
+	ctx context.Context, eng storage.Reader, sl stateloader.StateLoader, storeID roachpb.StoreID, metronome *logstore.Metronome,
 ) (LoadedReplicaState, error) {
 	ls := LoadedReplicaState{
 		ReplicaID: r.ReplicaID,
-		hardState: r.HardState,
+		hardState: r.hardState,
 	}
 	var err error
 	if ls.TruncState, err = sl.LoadRaftTruncatedState(ctx, eng); err != nil {
 		return LoadedReplicaState{}, err
 	}
-	if ls.LastEntryID, err = sl.LoadLastEntryID(ctx, eng, ls.TruncState); err != nil {
+	if ls.LastEntryID, err = sl.LoadLastEntryID(ctx, eng, ls.TruncState, metronome); err != nil {
 		return LoadedReplicaState{}, err
 	}
 	if ls.ReplState, err = sl.Load(ctx, eng, r.Desc); err != nil {
@@ -437,7 +438,7 @@ func (m replicaMap) setReplicaID(rangeID roachpb.RangeID, replicaID roachpb.Repl
 
 func (m replicaMap) setHardState(rangeID roachpb.RangeID, hs raftpb.HardState) {
 	ent := m.getOrMake(rangeID)
-	ent.HardState = hs
+	ent.hardState = hs
 	m[rangeID] = ent
 }
 

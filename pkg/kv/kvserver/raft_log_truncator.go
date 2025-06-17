@@ -11,6 +11,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
@@ -227,6 +228,8 @@ type storeForTruncator interface {
 	releaseReplicaForTruncator(r replicaForTruncator)
 	// Engine accessor.
 	getEngine() storage.Engine
+	// Metronome is needed during compaction
+	getMetronome(rangeID roachpb.RangeID) *logstore.Metronome
 }
 
 // replicaForTruncator abstracts the interface of Replica needed by the
@@ -549,7 +552,7 @@ func (t *raftLogTruncator) tryEnactTruncations(
 	defer batch.Close()
 	if err := handleTruncatedStateBelowRaftPreApply(ctx, truncState,
 		pendingTruncs.mu.truncs[enactIndex].RaftTruncatedState,
-		stateLoader.StateLoader, batch,
+		stateLoader.StateLoader, t.store.getMetronome(rangeID), batch,
 	); err != nil {
 		log.Errorf(ctx, "while attempting to truncate raft log: %+v", err)
 		pendingTruncs.reset()

@@ -39,14 +39,12 @@ import (
 // packages, reshuffle or merge them, including this StateLoader.
 type StateLoader struct {
 	keys.RangeIDPrefixBuf
-	metronome *Metronome
 }
 
 // NewStateLoader creates a log StateLoader for the given range.
-func NewStateLoader(rangeID roachpb.RangeID, metronome *Metronome) StateLoader {
+func NewStateLoader(rangeID roachpb.RangeID) StateLoader {
 	return StateLoader{
 		RangeIDPrefixBuf: keys.MakeRangeIDPrefixBuf(rangeID),
-		metronome:        metronome,
 	}
 }
 
@@ -61,7 +59,7 @@ type EntryID = kvserverpb.RaftTruncatedState
 // must have been just read, or otherwise exist in memory and be consistent with
 // the content of the log.
 func (sl StateLoader) LoadLastEntryID(
-	ctx context.Context, reader storage.Reader, ts kvserverpb.RaftTruncatedState,
+	ctx context.Context, reader storage.Reader, ts kvserverpb.RaftTruncatedState, metronome *Metronome,
 ) (EntryID, error) {
 	prefix := sl.RaftLogPrefix()
 	// NB: raft log has no intents.
@@ -97,7 +95,7 @@ func (sl StateLoader) LoadLastEntryID(
 		last.Term = kvpb.RaftTerm(entry.Term)
 	}
 
-	lastInMem, exists := sl.metronome.GetUnflushedEntries().GetLast()
+	lastInMem, exists := metronome.GetUnflushedEntries().GetLast()
 
 	if last.Index == 0 && !exists {
 		// The log is empty, which means we are either starting from scratch

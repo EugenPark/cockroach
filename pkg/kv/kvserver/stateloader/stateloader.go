@@ -38,9 +38,9 @@ type StateLoader struct {
 }
 
 // Make creates a StateLoader.
-func Make(rangeID roachpb.RangeID, metronome *logstore.Metronome) StateLoader {
+func Make(rangeID roachpb.RangeID) StateLoader {
 	return StateLoader{
-		StateLoader: logstore.NewStateLoader(rangeID, metronome),
+		StateLoader: logstore.NewStateLoader(rangeID),
 	}
 }
 

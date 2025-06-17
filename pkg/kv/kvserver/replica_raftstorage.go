@@ -224,7 +224,7 @@ func (r *Replica) GetSnapshot(
 	// NB: we don't hold either of locks, so can't use Replica.mu.stateLoader or
 	// Replica.raftMu.stateLoader. This call is not performance sensitive, so
 	// create a new state loader.
-	snapData, err := snapshot(ctx, snapUUID, stateloader.Make(rangeID, r.store.metronome[rangeID]), snap, startKey)
+	snapData, err := snapshot(ctx, snapUUID, stateloader.Make(rangeID), snap, startKey)
 	if err != nil {
 		log.Errorf(ctx, "error generating snapshot: %+v", err)
 		return nil, err
@@ -622,7 +622,7 @@ func (r *Replica) applySnapshot(
 	// has not yet been updated. Any errors past this point must therefore be
 	// treated as fatal.
 
-	sl := stateloader.Make(desc.RangeID, r.store.metronome[r.RangeID])
+	sl := stateloader.Make(desc.RangeID)
 	state, err := sl.Load(ctx, r.store.TODOEngine(), desc)
 	if err != nil {
 		log.Fatalf(ctx, "unable to load replica state: %s", err)

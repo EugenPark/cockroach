@@ -58,7 +58,7 @@ func runBenchmarkLogStore_StoreEntries(b *testing.B, bytes int64) {
 	s := LogStore{
 		RangeID:     rangeID,
 		Engine:      eng,
-		StateLoader: NewStateLoader(rangeID, nil),
+		StateLoader: NewStateLoader(rangeID),
 		EntryCache:  ec,
 		Settings:    st,
 	}

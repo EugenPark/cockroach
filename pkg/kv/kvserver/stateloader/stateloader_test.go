@@ -27,7 +27,7 @@ func TestUninitializedReplicaState(t *testing.T) {
 	eng := storage.NewDefaultInMemForTesting()
 	defer eng.Close()
 	desc := roachpb.RangeDescriptor{RangeID: 123}
-	exp, err := Make(desc.RangeID, &logstore.Metronome{}).Load(context.Background(), eng, &desc)
+	exp, err := Make(desc.RangeID).Load(context.Background(), eng, &desc)
 	require.NoError(t, err)
 	act := UninitializedReplicaState(desc.RangeID)
 	require.Equal(t, exp, act)
@@ -109,7 +109,7 @@ func TestLoadLastEntryID(t *testing.T) {
 
 	desc := roachpb.RangeDescriptor{RangeID: 123}
 	metronome := logstore.InitializeMetronome(1)
-	sl := Make(desc.RangeID, metronome)
+	sl := Make(desc.RangeID)
 
 	entries := ents(1, 2, 3, 4, 5)
 
@@ -137,7 +137,7 @@ func TestLoadLastEntryID(t *testing.T) {
 		t.Fatalf("Error while writing batch %s\n", err.Error())
 	}
 
-	lastEntryID, err := sl.LoadLastEntryID(context.Background(), reader, kvserverpb.RaftTruncatedState{})
+	lastEntryID, err := sl.LoadLastEntryID(context.Background(), reader, kvserverpb.RaftTruncatedState{}, metronome)
 	require.NoError(t, err)
 
 	require.Equal(t, logstore.EntryID{
@@ -150,7 +150,7 @@ func TestLoadLastEntryID(t *testing.T) {
 		Index: 6,
 	}})
 
-	lastEntryID, err = sl.LoadLastEntryID(context.Background(), reader, kvserverpb.RaftTruncatedState{})
+	lastEntryID, err = sl.LoadLastEntryID(context.Background(), reader, kvserverpb.RaftTruncatedState{}, metronome)
 	require.NoError(t, err)
 
 	require.Equal(t, logstore.EntryID{

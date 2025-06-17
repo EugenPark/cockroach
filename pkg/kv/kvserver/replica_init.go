@@ -65,7 +65,7 @@ func loadInitializedReplicaForTesting(
 	if !desc.IsInitialized() {
 		return nil, errors.AssertionFailedf("can not load with uninitialized descriptor: %s", desc)
 	}
-	state, err := kvstorage.LoadReplicaState(ctx, store.TODOEngine(), nil, store.StoreID(), desc, replicaID)
+	state, err := kvstorage.LoadReplicaState(ctx, store.TODOEngine(), logstore.InitializeMetronome(replicaID), store.StoreID(), desc, replicaID)
 	if err != nil {
 		return nil, err
 	}
@@ -146,16 +146,9 @@ func newUninitializedReplicaWithoutRaftGroup(
 		allocatorToken: &plan.AllocatorToken{},
 	}
 	r.sideTransportClosedTimestamp.init(store.cfg.ClosedTimestampReceiver, rangeID)
-	statel := stateloader.Make(rangeID, r.store.metronome[rangeID])
-	sidel := logstore.NewDiskSideloadStorage(
-		store.cfg.Settings,
-		rangeID,
-		store.TODOEngine().GetAuxiliaryDir(),
-		store.limiters.BulkIOWriteRate,
-		store.TODOEngine(),
-	)
+
 	r.mu.pendingLeaseRequest = makePendingLeaseRequest(r)
-	r.mu.stateLoader = statel
+	r.mu.stateLoader = stateloader.Make(rangeID)
 	r.mu.quiescent = true
 	r.mu.conf = store.cfg.DefaultSpanConfig
 
@@ -213,8 +206,14 @@ func newUninitializedReplicaWithoutRaftGroup(
 	// r.AmbientContext.AddLogTag("@", fmt.Sprintf("%x", unsafe.Pointer(r)))
 
 	r.raftMu.rangefeedCTLagObserver = newRangeFeedCTLagObserver()
-	r.raftMu.stateLoader = statel
-	r.raftMu.sideloaded = sidel
+	r.raftMu.stateLoader = stateloader.Make(rangeID)
+	r.raftMu.sideloaded = logstore.NewDiskSideloadStorage(
+		store.cfg.Settings,
+		rangeID,
+		store.TODOEngine().GetAuxiliaryDir(),
+		store.limiters.BulkIOWriteRate,
+		store.TODOEngine(),
+	)
 	r.raftMu.logStorage = &logstore.LogStore{
 		RangeID:     rangeID,
 		Engine:      store.TODOEngine(),
@@ -329,6 +328,7 @@ func (r *Replica) initRaftMuLockedReplicaMuLocked(
 	if err := r.initRaftGroupRaftMuLockedReplicaMuLocked(); err != nil {
 		return err
 	}
+
 	r.setDescLockedRaftMuLocked(r.AnnotateCtx(context.TODO()), desc)
 
 	// Only do this if there was a previous lease. This shouldn't be important

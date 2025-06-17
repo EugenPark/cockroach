@@ -22,12 +22,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/raftlog"
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/testutils/echotest"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/time/rate"
 )
 
 func TestRaftStorageWrites(t *testing.T) {
@@ -47,7 +45,7 @@ func TestRaftStorageWrites(t *testing.T) {
 	}
 	metronome := InitializeMetronome(1)
 	metronome.SetSchemes(schemes)
-	sl := NewStateLoader(rangeID, metronome)
+	sl := NewStateLoader(rangeID)
 	eng := storage.NewDefaultInMemForTesting()
 	defer eng.Close()
 
@@ -98,7 +96,7 @@ func TestRaftStorageWrites(t *testing.T) {
 	truncate := func(name string, ts kvserverpb.RaftTruncatedState) {
 		t.Helper()
 		batch := writeBatch(func(rw storage.ReadWriter) {
-			require.NoError(t, Compact(ctx, trunc, ts, sl, rw))
+			require.NoError(t, Compact(ctx, trunc, ts, sl, metronome, rw))
 		})
 		trunc = ts
 		state.ByteSize = stats()
@@ -216,7 +214,7 @@ func TestRaftStorageLoad(t *testing.T) {
 
 	m := InitializeMetronome(roachpb.ReplicaID(2))
 	m.SetSchemes(schemes)
-	sl := NewStateLoader(rangeID, m)
+	sl := NewStateLoader(rangeID)
 	entryCache := raftentry.NewCache(2048)
 	eng := storage.NewDefaultInMemForTesting()
 	sideloaded := newTestingSideloadStorage(eng)

@@ -133,7 +133,7 @@ func splitPreApply(
 	// Update the raft HardState with the new Commit value now that the
 	// replica is initialized (combining it with existing or default
 	// Term and Vote). This is the common case.
-	rsl := stateloader.Make(split.RightDesc.RangeID, nil)
+	rsl := stateloader.Make(split.RightDesc.RangeID)
 	if err := rsl.SynthesizeRaftState(ctx, readWriter); err != nil {
 		log.Fatalf(ctx, "%v", err)
 	}

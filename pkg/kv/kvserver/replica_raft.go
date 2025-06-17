@@ -2943,9 +2943,10 @@ func handleTruncatedStateBelowRaftPreApply(
 	prev kvserverpb.RaftTruncatedState,
 	next kvserverpb.RaftTruncatedState,
 	loader logstore.StateLoader,
+	metronome *logstore.Metronome,
 	writer storage.Writer,
 ) error {
-	return logstore.Compact(ctx, prev, next, loader, writer)
+	return logstore.Compact(ctx, prev, next, loader, metronome, writer)
 }
 
 // shouldCampaignAfterConfChange returns true if the current replica should

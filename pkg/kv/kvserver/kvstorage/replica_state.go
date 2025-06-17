@@ -44,7 +44,7 @@ func LoadReplicaState(
 	desc *roachpb.RangeDescriptor,
 	replicaID roachpb.ReplicaID,
 ) (LoadedReplicaState, error) {
-	sl := stateloader.Make(desc.RangeID, metronome)
+	sl := stateloader.Make(desc.RangeID)
 	id, err := sl.LoadRaftReplicaID(ctx, eng)
 	if err != nil {
 		return LoadedReplicaState{}, err
@@ -61,7 +61,7 @@ func LoadReplicaState(
 	if ls.TruncState, err = sl.LoadRaftTruncatedState(ctx, eng); err != nil {
 		return LoadedReplicaState{}, err
 	}
-	if ls.LastEntryID, err = sl.LoadLastEntryID(ctx, eng, ls.TruncState); err != nil {
+	if ls.LastEntryID, err = sl.LoadLastEntryID(ctx, eng, ls.TruncState, metronome); err != nil {
 		return LoadedReplicaState{}, err
 	}
 	if ls.ReplState, err = sl.Load(ctx, eng, desc); err != nil {
@@ -139,7 +139,7 @@ func CreateUninitializedReplica(
 	//   the Term and Vote values for that older replica in the context of
 	//   this newer replica is harmless since it just limits the votes for
 	//   this replica.
-	sl := stateloader.Make(rangeID, metronome)
+	sl := stateloader.Make(rangeID)
 	if err := sl.SetRaftReplicaID(ctx, eng, replicaID); err != nil {
 		return err
 	}

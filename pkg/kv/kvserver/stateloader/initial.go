@@ -76,7 +76,7 @@ func WriteInitialReplicaState(
 		s.Version = &replicaVersion
 	}
 
-	rsl := Make(desc.RangeID, nil)
+	rsl := Make(desc.RangeID)
 	if existingLease, err := rsl.LoadLease(ctx, readWriter); err != nil {
 		return enginepb.MVCCStats{}, errors.Wrap(err, "error reading lease")
 	} else if (existingLease != roachpb.Lease{}) {
@@ -137,7 +137,7 @@ func WriteInitialRangeState(
 
 	// TODO(sep-raft-log): when the log storage is separated, the below can't be
 	// written in the same batch. Figure out the ordering required here.
-	sl := Make(desc.RangeID, nil)
+	sl := Make(desc.RangeID)
 	if err := sl.SynthesizeRaftState(ctx, readWriter); err != nil {
 		return err
 	}

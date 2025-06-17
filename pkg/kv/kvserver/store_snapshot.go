@@ -709,7 +709,7 @@ func SendEmptySnapshot(
 	}
 
 	// Use stateloader to load state out of memory from the previously created engine.
-	sl := stateloader.Make(desc.RangeID, nil)
+	sl := stateloader.Make(desc.RangeID)
 	state, err := sl.Load(ctx, eng, &desc)
 	if err != nil {
 		return err

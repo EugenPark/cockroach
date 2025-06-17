@@ -509,6 +509,7 @@ func Compact(
 	prev kvserverpb.RaftTruncatedState,
 	next kvserverpb.RaftTruncatedState,
 	loader StateLoader,
+	metronome *Metronome,
 	writer storage.Writer,
 ) error {
 	if next.Index <= prev.Index {
@@ -543,7 +544,7 @@ func Compact(
 		}
 	}
 
-	loader.metronome.GetUnflushedEntries().Compact(uint64(next.Index))
+	metronome.GetUnflushedEntries().Compact(uint64(next.Index))
 
 	key := prefixBuf.RaftTruncatedStateKey()
 	var value roachpb.Value
