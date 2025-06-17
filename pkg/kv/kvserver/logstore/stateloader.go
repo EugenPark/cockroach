@@ -7,7 +7,6 @@ package logstore
 
 import (
 	"context"
-	"fmt"
 	"math"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -82,7 +81,6 @@ func (sl StateLoader) LoadLastEntryID(
 			log.Fatalf(ctx, "unable to decode Raft log index key: len(%s) < len(%s)", key.String(), prefix.String())
 		}
 		suffix := key[len(prefix):]
-
 		var err error
 		last.Index, err = keys.DecodeRaftLogKeyFromSuffix(suffix)
 		if err != nil {
@@ -101,12 +99,9 @@ func (sl StateLoader) LoadLastEntryID(
 
 	lastInMem, exists := sl.metronome.GetUnflushedEntries().GetLast()
 
-	fmt.Printf("Last Index and In mem repr %d, %d\n", last.Index, lastInMem.Index)
-
 	if last.Index == 0 && !exists {
 		// The log is empty, which means we are either starting from scratch
 		// or the entire log has been truncated away.
-		fmt.Printf("Truncated State %#v\n", ts)
 		return ts, nil
 	}
 
@@ -163,7 +158,6 @@ func (sl StateLoader) LoadHardState(
 	if !found || err != nil {
 		return raftpb.HardState{}, err
 	}
-
 	return hs, nil
 }
 

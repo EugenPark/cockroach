@@ -8,7 +8,6 @@ package kvserver
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -167,7 +166,7 @@ var defaultRaftSchedulerShardSize = envutil.EnvOrDefaultInt("COCKROACH_SCHEDULER
 // 16 GB RAM = 64 MB  (~4 vCPUs)
 // 32 GB RAM = 128 MB (~8 vCPUs)
 // 64 GB RAM = 256 MB (~16 vCPUs)
-
+//
 // This is conservative, since the memory is not accounted for in memory budgets
 // nor via the --cache flag. However, it should be sufficient to achieve near
 // 100% cache hit rate for well-provisioned low-latency clusters with moderate
@@ -342,8 +341,6 @@ var SnapshotSendLimit = settings.RegisterIntSetting(
 	envutil.EnvOrDefaultInt64("COCKROACH_CONCURRENT_SNAPSHOT_SEND_LIMIT", 2),
 	settings.NonNegativeInt,
 )
-
-// var ErrLogStale = errors.New("Log is too far back to recover")
 
 // TestStoreConfig has some fields initialized with values relevant in tests.
 func TestStoreConfig(clock *hlc.Clock) StoreConfig {
@@ -2330,7 +2327,6 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 
 		if repl.Desc == nil {
 			// Uninitialized Replicas are not currently instantiated at store start.
-			fmt.Printf("Does this even happen\n")
 			continue
 		}
 
@@ -2541,8 +2537,6 @@ func (s *Store) recoverLog(
 	// TODO: Add exclude entries as a param here
 	missingIndices := metronome.GetMissingIndices(lo, hi, flushedIndices)
 
-	fmt.Printf("RangeID %d: Missing entries %#v\n", repl.RangeID, missingIndices)
-
 	// Query other nodes for log entries
 	for _, replica := range replicas {
 		// Skip own replica
@@ -2588,8 +2582,6 @@ func (s *Store) recoverLog(
 		// TODO: Sideload the entries perhaps?
 		entries := resp.entries
 		if len(entries) > 0 {
-			fmt.Printf("RangeID %d: Taking fast path\n", repl.RangeID)
-			// fmt.Printf("RangeID %d: received entries %#v\n", repl.RangeID, entries)
 			var newEntries []raftpb.Entry
 			for _, ent := range entries {
 				if index := slices.Index(missingIndices, ent.Index); index != -1 {
@@ -2605,14 +2597,11 @@ func (s *Store) recoverLog(
 			}
 
 			metronome.GetUnflushedEntries().Add(thinEntries)
-			// metronome.GetUnflushedEntries().MergeRaftLogs(thinEntries)
 			continue
 		}
 
 		// Slow Path
-		fmt.Printf("RangeID %d: Taking slow path\n", repl.RangeID)
 		if resp.snapshot == nil {
-			fmt.Printf("RangeID %d: WTF why is this nil\n", repl.RangeID)
 			return nil
 		}
 
@@ -2626,7 +2615,6 @@ func (s *Store) recoverLog(
 
 		hs, err := sl.LoadHardState(ctx, reader)
 		if err != nil {
-			fmt.Printf("Failed to load truncated state: %s\n", err.Error())
 			return err
 		}
 		hs.Commit = snap.Metadata.Index
@@ -2647,23 +2635,11 @@ func (s *Store) recoverLog(
 		}
 
 		// Clear log entries
-		// startKey := keys.RaftLogKeyFromPrefix(raftLogPrefix, kvpb.RaftIndex(1))
-		// endKey := keys.RaftLogKeyFromPrefix(raftLogPrefix, kvpb.RaftIndex(snap.Metadata.Index+1))
-		// if deletedKeys, _, _, _, err := storage.MVCCDeleteRange(ctx, writer, startKey, endKey, 0, hlc.Timestamp{}, storage.MVCCWriteOptions{}, false); err != nil {
-		// 	fmt.Printf("RangeID %d: Failed to update Log Entries\n", repl.RangeID)
-		// 	return err
-		// } else {
-		// 	fmt.Printf("RangeID %d: StartKey %s, EndKey %s,  Cleared %#v\n", repl.RangeID, startKey, endKey, deletedKeys)
-		// }
 		for _, ent := range ownEntries {
 			key := keys.RaftLogKeyFromPrefix(raftLogPrefix, kvpb.RaftIndex(ent.Index))
-			foundKey, _, err := storage.MVCCDelete(ctx, writer, key, hlc.Timestamp{}, storage.MVCCWriteOptions{})
+			_, _, err := storage.MVCCDelete(ctx, writer, key, hlc.Timestamp{}, storage.MVCCWriteOptions{})
 			if err != nil {
 				return err
-			}
-
-			if !foundKey {
-				fmt.Printf("Did not find key %s for ent %d\n", key, ent.Index)
 			}
 		}
 
@@ -2678,17 +2654,6 @@ func (s *Store) recoverLog(
 	}
 
 	metronome.GetUnflushedEntries().Sort()
-	fmt.Printf("RangeID %d: Unflushed log: [", repl.RangeID)
-	for _, ent := range metronome.GetUnflushedEntries().GetLog(lo, hi+1) {
-		fmt.Printf("%d, ", ent.Index)
-	}
-	fmt.Printf("]\n")
-
-	fmt.Printf("RangeID %d: Own Log: [", repl.RangeID)
-	for _, ent := range ownEntries {
-		fmt.Printf("%d, ", ent.Index)
-	}
-	fmt.Printf("]\n")
 
 	return nil
 }
@@ -2701,7 +2666,6 @@ func (s *Store) GetUntruncatedLogEntriesRaftMu(ctx context.Context, sl stateload
 		return nil, err
 	}
 
-	fmt.Printf("RangeID %d: GetUntruncated\n", rangeID)
 	lastEntID, err := sl.LoadLastEntryID(ctx, reader, ts)
 	if err != nil {
 		return nil, err

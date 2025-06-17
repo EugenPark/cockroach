@@ -7,7 +7,6 @@ package kvstorage
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
@@ -55,7 +54,6 @@ func LoadReplicaState(
 			"r%d: loaded RaftReplicaID %d does not match %d", desc.RangeID, loaded, replicaID)
 	}
 
-	fmt.Printf("RangeID %d: LoadReplicaState\n", desc.RangeID)
 	ls := LoadedReplicaState{ReplicaID: replicaID}
 	if ls.hardState, err = sl.LoadHardState(ctx, eng); err != nil {
 		return LoadedReplicaState{}, err

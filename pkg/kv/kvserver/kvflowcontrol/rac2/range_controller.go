@@ -3016,11 +3016,11 @@ func (rss *replicaSendStream) dequeueFromQueueAndSendRaftMuAndStreamLocked(
 	var tokensNeeded kvflowcontrol.Tokens
 	var approximatedNumEntries int
 	var approximatedNumActualTokens kvflowcontrol.Tokens
-	for i, entry := range msg.Entries {
+	for _, entry := range msg.Entries {
 		entryState := getEntryFCStateOrFatal(ctx, entry)
 		if entryState.id.index != rss.mu.sendQueue.indexToSend {
-			panic(errors.AssertionFailedf("index %d != indexToSend %d it is entry no.%d",
-				entryState.id.index, rss.mu.sendQueue.indexToSend, i))
+			panic(errors.AssertionFailedf("index %d != indexToSend %d",
+				entryState.id.index, rss.mu.sendQueue.indexToSend))
 		}
 		if entryState.id.index >= rss.mu.sendQueue.nextRaftIndex {
 			panic(errors.AssertionFailedf("index %d >= nextRaftIndex %d", entryState.id.index,

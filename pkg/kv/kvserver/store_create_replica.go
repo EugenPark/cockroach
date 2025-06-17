@@ -7,7 +7,6 @@ package kvserver
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
@@ -213,7 +212,6 @@ func (s *Store) tryGetOrCreateReplica(
 		// statemachine).
 		ctx, s.TODOEngine(), metronome, s.StoreID(), rangeID, replicaID,
 	); err != nil {
-		fmt.Printf("Probably group deleted error %s\n", err.Error())
 		return nil, false, err
 	}
 

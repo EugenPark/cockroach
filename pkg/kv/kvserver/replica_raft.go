@@ -1249,8 +1249,6 @@ func (r *Replica) handleRaftReadyRaftMuLocked(
 			}
 
 			r.mu.raftTracer.MaybeTraceAppend(app)
-			// TODO: split the append here and at timeouts
-			// Do we need to update the raft state? should in theory be updated in memory
 			if state, err = r.asLogStorage().appendRaftMuLocked(ctx, app, &stats.append); err != nil {
 				return stats, errors.Wrap(err, "while storing log entries")
 			}
@@ -2946,9 +2944,8 @@ func handleTruncatedStateBelowRaftPreApply(
 	next kvserverpb.RaftTruncatedState,
 	loader logstore.StateLoader,
 	writer storage.Writer,
-	rangeID roachpb.RangeID,
 ) error {
-	return logstore.Compact(ctx, prev, next, loader, writer /*rangeID*/)
+	return logstore.Compact(ctx, prev, next, loader, writer)
 }
 
 // shouldCampaignAfterConfChange returns true if the current replica should

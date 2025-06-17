@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"cmp"
 	"context"
-	"fmt"
 	"slices"
 	"time"
 
@@ -408,7 +407,6 @@ func (r Replica) Load(
 	if ls.TruncState, err = sl.LoadRaftTruncatedState(ctx, eng); err != nil {
 		return LoadedReplicaState{}, err
 	}
-	fmt.Printf("RangeID %d: Load\n", r.RangeID)
 	if ls.LastEntryID, err = sl.LoadLastEntryID(ctx, eng, ls.TruncState); err != nil {
 		return LoadedReplicaState{}, err
 	}
@@ -484,7 +482,6 @@ func loadReplicas(ctx context.Context, eng storage.Engine) ([]Replica, error) {
 	// This leads to the general desire to validate the internal consistency of the
 	// entire raft state (i.e. HardState, TruncatedState, Log).
 	{
-		// Load RaftReplicaID
 		logEvery := log.Every(10 * time.Second)
 		var i int
 		var msg kvserverpb.RaftReplicaID
@@ -502,7 +499,6 @@ func loadReplicas(ctx context.Context, eng storage.Engine) ([]Replica, error) {
 		}
 		log.Infof(ctx, "loaded replica ID for %d/%d replicas", len(s), len(s))
 
-		// Load HardState
 		logEvery = log.Every(10 * time.Second)
 		i = 0
 		var hs raftpb.HardState

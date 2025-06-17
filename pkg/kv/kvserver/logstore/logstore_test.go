@@ -22,10 +22,12 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/raftlog"
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/testutils/echotest"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/time/rate"
 )
 
 func TestRaftStorageWrites(t *testing.T) {
@@ -217,7 +219,7 @@ func TestRaftStorageLoad(t *testing.T) {
 	sl := NewStateLoader(rangeID, m)
 	entryCache := raftentry.NewCache(2048)
 	eng := storage.NewDefaultInMemForTesting()
-	sideloaded := NewTestingSideloadStorage(eng)
+	sideloaded := newTestingSideloadStorage(eng)
 	batch := eng.NewWriteBatch()
 	defer eng.Close()
 

@@ -169,7 +169,7 @@ func TestGetMissingIndices(t *testing.T) {
 	expected := []uint64{
 		5, 8, 9,
 	}
-	actual := metronome.GetMissingIndices(5, 10)
+	actual := metronome.GetMissingIndices(5, 10, nil)
 
 	if len(expected) != len(actual) {
 		t.Fatalf("Indices do not match up. Expected %#v Got %#v\n", expected, actual)
@@ -181,11 +181,27 @@ func TestGetMissingIndices(t *testing.T) {
 		}
 	}
 
+	// Test normal case without bound violations but with a filter
+	expected = []uint64{
+		9,
+	}
+	actual = metronome.GetMissingIndices(5, 10, []uint64{5, 8})
+
+	if len(expected) != len(actual) {
+		t.Fatalf("Indices do not match up in filter test case. Expected %#v Got %#v\n", expected, actual)
+	}
+
+	for i := range actual {
+		if expected[i] != actual[i] {
+			t.Fatalf("Index does not match up in filter test case. Expected %d Got %d\n", expected[i], actual[i])
+		}
+	}
+
 	// Test case with upper bound violations
 	expected = []uint64{
 		5, 8, 9,
 	}
-	actual = metronome.GetMissingIndices(5, 7)
+	actual = metronome.GetMissingIndices(5, 7, nil)
 
 	if len(expected) != len(actual) {
 		t.Fatalf("Indices do not match up. Expected %#v Got %#v\n", expected, actual)
@@ -201,7 +217,7 @@ func TestGetMissingIndices(t *testing.T) {
 	expected = []uint64{
 		8, 9, 12,
 	}
-	actual = metronome.GetMissingIndices(10, 13)
+	actual = metronome.GetMissingIndices(10, 13, nil)
 
 	if len(expected) != len(actual) {
 		t.Fatalf("Indices do not match up. Expected %#v Got %#v\n", expected, actual)
@@ -217,7 +233,7 @@ func TestGetMissingIndices(t *testing.T) {
 	expected = []uint64{
 		2, 5, 8, 9,
 	}
-	actual = metronome.GetMissingIndices(3, 7)
+	actual = metronome.GetMissingIndices(3, 7, nil)
 
 	if len(expected) != len(actual) {
 		t.Fatalf("Indices do not match up. Expected %#v Got %#v\n", expected, actual)
