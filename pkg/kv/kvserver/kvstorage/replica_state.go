@@ -39,10 +39,10 @@ type LoadedReplicaState struct {
 func LoadReplicaState(
 	ctx context.Context,
 	eng storage.Reader,
-	metronome *logstore.Metronome,
 	storeID roachpb.StoreID,
 	desc *roachpb.RangeDescriptor,
 	replicaID roachpb.ReplicaID,
+	metronome *logstore.Metronome,
 ) (LoadedReplicaState, error) {
 	sl := stateloader.Make(desc.RangeID)
 	id, err := sl.LoadRaftReplicaID(ctx, eng)
@@ -110,10 +110,10 @@ func (r LoadedReplicaState) check(storeID roachpb.StoreID) error {
 func CreateUninitializedReplica(
 	ctx context.Context,
 	eng storage.Engine,
-	metronome *logstore.Metronome,
 	storeID roachpb.StoreID,
 	rangeID roachpb.RangeID,
 	replicaID roachpb.ReplicaID,
+	metronome *logstore.Metronome,
 ) error {
 	// Before creating the replica, see if there is a tombstone which would
 	// indicate that this replica has been removed.
@@ -146,6 +146,6 @@ func CreateUninitializedReplica(
 
 	// Make sure that storage invariants for this uninitialized replica hold.
 	uninitDesc := roachpb.RangeDescriptor{RangeID: rangeID}
-	_, err := LoadReplicaState(ctx, eng, metronome, storeID, &uninitDesc, replicaID)
+	_, err := LoadReplicaState(ctx, eng, storeID, &uninitDesc, replicaID, metronome)
 	return err
 }

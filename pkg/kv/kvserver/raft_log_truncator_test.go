@@ -15,6 +15,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
@@ -252,6 +253,10 @@ func makeStoreTT(eng storage.Engine, buf *strings.Builder) *storeTruncatorTest {
 
 func (s *storeTruncatorTest) getEngine() storage.Engine {
 	return s.eng
+}
+
+func (s *storeTruncatorTest) getMetronome(rangeID roachpb.RangeID) *logstore.Metronome {
+	return s.getMetronome(rangeID)
 }
 
 func (s *storeTruncatorTest) acquireReplicaForTruncator(

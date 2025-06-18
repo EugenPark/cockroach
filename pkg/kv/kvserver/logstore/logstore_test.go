@@ -96,7 +96,7 @@ func TestRaftStorageWrites(t *testing.T) {
 	truncate := func(name string, ts kvserverpb.RaftTruncatedState) {
 		t.Helper()
 		batch := writeBatch(func(rw storage.ReadWriter) {
-			require.NoError(t, Compact(ctx, trunc, ts, sl, metronome, rw))
+			require.NoError(t, Compact(ctx, trunc, ts, sl, rw, metronome))
 		})
 		trunc = ts
 		state.ByteSize = stats()
@@ -248,7 +248,7 @@ func TestRaftStorageLoad(t *testing.T) {
 		t.Fatalf("Error while writing batch %s\n", err.Error())
 	}
 
-	ents, _, _, err := LoadEntries(ctx, sl, eng, rangeID, entryCache, sideloaded, m, kvpb.RaftIndex(1), kvpb.RaftIndex(6), uint64(math.MaxUint64), &BytesAccount{})
+	ents, _, _, err := LoadEntries(ctx, sl, eng, rangeID, entryCache, sideloaded, kvpb.RaftIndex(1), kvpb.RaftIndex(6), uint64(math.MaxUint64), &BytesAccount{}, m)
 	if err != nil {
 		t.Fatalf("Failed to load entries with %s\n", err.Error())
 	}

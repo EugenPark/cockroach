@@ -398,7 +398,7 @@ func (r Replica) ID() storage.FullReplicaID {
 
 // Load loads the state necessary to instantiate a replica in memory.
 func (r Replica) Load(
-	ctx context.Context, eng storage.Reader, sl stateloader.StateLoader, storeID roachpb.StoreID, metronome *logstore.Metronome,
+	ctx context.Context, eng storage.Reader, storeID roachpb.StoreID, metronome *logstore.Metronome, sl stateloader.StateLoader,
 ) (LoadedReplicaState, error) {
 	ls := LoadedReplicaState{
 		ReplicaID: r.ReplicaID,

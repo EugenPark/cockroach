@@ -99,7 +99,7 @@ func TestHandleTruncatedStateBelowRaft(t *testing.T) {
 
 				// Apply truncation.
 				require.NoError(t, handleTruncatedStateBelowRaftPreApply(
-					ctx, currentTruncatedState, suggestedTruncatedState, loader, eng,
+					ctx, currentTruncatedState, suggestedTruncatedState, loader, eng, logstore.InitializeMetronome(1),
 				))
 
 				// Check the truncated state.

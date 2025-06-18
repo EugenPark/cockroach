@@ -65,7 +65,7 @@ func loadInitializedReplicaForTesting(
 	if !desc.IsInitialized() {
 		return nil, errors.AssertionFailedf("can not load with uninitialized descriptor: %s", desc)
 	}
-	state, err := kvstorage.LoadReplicaState(ctx, store.TODOEngine(), logstore.InitializeMetronome(replicaID), store.StoreID(), desc, replicaID)
+	state, err := kvstorage.LoadReplicaState(ctx, store.TODOEngine(), store.StoreID(), desc, replicaID, logstore.InitializeMetronome(replicaID))
 	if err != nil {
 		return nil, err
 	}

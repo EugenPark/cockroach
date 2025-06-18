@@ -509,8 +509,8 @@ func Compact(
 	prev kvserverpb.RaftTruncatedState,
 	next kvserverpb.RaftTruncatedState,
 	loader StateLoader,
-	metronome *Metronome,
 	writer storage.Writer,
+	metronome *Metronome,
 ) error {
 	if next.Index <= prev.Index {
 		// TODO(pav-kv): return an assertion failure error.
@@ -598,10 +598,10 @@ func LoadTerm(
 	ctx context.Context,
 	rsl StateLoader,
 	eng storage.Engine,
-	metronome *Metronome,
 	rangeID roachpb.RangeID,
 	eCache *raftentry.Cache,
 	index kvpb.RaftIndex,
+	metronome *Metronome,
 ) (kvpb.RaftTerm, error) {
 	entry, found := eCache.Get(rangeID, index)
 	if found {
@@ -686,10 +686,10 @@ func LoadEntries(
 	rangeID roachpb.RangeID,
 	eCache *raftentry.Cache,
 	sideloaded SideloadStorage,
-	m *Metronome,
 	lo, hi kvpb.RaftIndex,
 	maxBytes uint64,
 	account *BytesAccount,
+	m *Metronome,
 ) (_ []raftpb.Entry, _cachedSize uint64, _loadedSize uint64, _ error) {
 	if lo > hi {
 		return nil, 0, 0, errors.Errorf("lo:%d is greater than hi:%d", lo, hi)

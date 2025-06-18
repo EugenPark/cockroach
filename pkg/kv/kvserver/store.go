@@ -1485,7 +1485,6 @@ func NewStore(
 	}
 	iot := ioThresholds{}
 	iot.Replace(nil, 1.0) // init as empty
-
 	s := &Store{
 		// NB: do not access these fields directly. Instead, use
 		// the StateEngine, TODOEngine, LogEngine methods.
@@ -1606,9 +1605,6 @@ func NewStore(
 	}
 
 	s.raftEntryCache = raftentry.NewCache(cfg.RaftEntryCacheSize)
-	//either the two below or use whenever NewStore is called in Node to call other nodes
-	// s.cfg.NodeDialer.Dial()
-	// s.cfg.Transport
 	s.metrics.registry.AddMetricStruct(s.raftEntryCache.Metrics())
 
 	s.coalescedMu.Lock()
@@ -2309,8 +2305,6 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 	//
 	// TODO(sep-raft-log): this will need to learn to stitch and reconcile data from
 	// both engines.
-	// TODO: Issue here is, we load the commit index here but recover the log later - maybe reafctor so that init happens at the same time - then we can
-	// adjust in case of truncated log
 	repls, err := kvstorage.LoadAndReconcileReplicas(ctx, s.TODOEngine())
 	if err != nil {
 		return err
@@ -2342,7 +2336,7 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 		}
 
 		// TODO(pavelkalinnikov): integrate into kvstorage.LoadAndReconcileReplicas.
-		state, err := repl.Load(ctx, s.TODOEngine(), sl, s.StoreID(), s.metronome[repl.RangeID])
+		state, err := repl.Load(ctx, s.TODOEngine(), s.StoreID(), s.metronome[repl.RangeID], sl)
 		if err != nil {
 			return err
 		}
@@ -2390,7 +2384,6 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 		if l, _ := rep.GetLease(); !l.SupportsQuiescence() && l.Sequence > 0 {
 			rep.maybeUnquiesce(ctx, true /* wakeLeader */, true /* mayCampaign */)
 		}
-
 	}
 	log.Infof(ctx, "initialized %d/%d replicas", len(repls), len(repls))
 

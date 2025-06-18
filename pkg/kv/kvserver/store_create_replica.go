@@ -198,19 +198,17 @@ func (s *Store) tryGetOrCreateReplica(
 	} else if repl != nil {
 		return repl, false, nil
 	}
-
 	// Now we have the guarantee that s.mu.replicasByRangeID does not contain
 	// rangeID, and only we can insert this rangeID. This also implies that the
 	// RangeTombstone in storage for this rangeID is "locked" because it can only
 	// be accessed by someone holding a reference to, or currently creating a
 	// Replica for this rangeID, and that's us.
 
-	metronome := logstore.InitializeMetronome(replicaID)
-	s.metronome[rangeID] = metronome
+	s.metronome[rangeID] = logstore.InitializeMetronome(replicaID)
 	if err := kvstorage.CreateUninitializedReplica(
 		// TODO(sep-raft-log): needs both engines due to tombstone (which lives on
 		// statemachine).
-		ctx, s.TODOEngine(), metronome, s.StoreID(), rangeID, replicaID,
+		ctx, s.TODOEngine(), s.StoreID(), rangeID, replicaID, s.metronome[rangeID],
 	); err != nil {
 		return nil, false, err
 	}
