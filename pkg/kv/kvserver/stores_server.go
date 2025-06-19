@@ -9,6 +9,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
@@ -77,6 +78,8 @@ func (is Server) GetUntruncatedLog(
 			rangeID := req.RangeID
 			missingIndices := req.MissingIndices
 			repl := s.GetReplicaIfExists(rangeID)
+			reader := s.TODOEngine().NewReader(storage.StandardDurability)
+			defer reader.Close()
 
 			if repl == nil {
 				return nil
@@ -101,7 +104,7 @@ func (is Server) GetUntruncatedLog(
 			}
 
 			// Missing entries
-			ents, err := s.GetUntruncatedLogEntriesRaftMu(ctx, repl.raftMu.stateLoader, repl.raftMu.sideloaded, repl.raftMu.logStorage.EntryCache, rangeID, missingIndices[0])
+			ents, err := logstore.LoadDiskEntries(ctx, reader, repl.raftMu.sideloaded, repl.raftMu.logStorage.EntryCache, rangeID, missingIndices[0], missingIndices[len(missingIndices)-1])
 			if err != nil {
 				return err
 			}

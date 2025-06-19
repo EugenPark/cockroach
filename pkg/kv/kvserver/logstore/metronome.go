@@ -1,66 +1,89 @@
 package logstore
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"math/rand"
 	"slices"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
+	"github.com/cockroachdb/cockroach/pkg/util/stop"
 )
 
 // Timeout Logic
 type timeout chan struct{}
 
 type timeoutQueue struct {
-	queue map[raftpb.Index]timeout
+	queue   map[raftpb.Index]timeout
+	stopper *stop.Stopper
 }
 
-func newTimeoutQueue() timeoutQueue {
+func newTimeoutQueue(stopper *stop.Stopper) timeoutQueue {
 	return timeoutQueue{
-		queue: make(map[raftpb.Index]timeout),
+		queue:   make(map[raftpb.Index]timeout),
+		stopper: stopper,
 	}
 }
 
-func (tq *timeoutQueue) addTimeout(index raftpb.Index, duration time.Duration, onTimeout func()) {
+func (tq *timeoutQueue) addTimeout(ctx context.Context, index raftpb.Index, duration time.Duration, onTimeout func()) {
 	timer := time.NewTimer(duration)
-
 	timeout := make(chan struct{})
 	tq.queue[index] = timeout
 
-	go func() {
+	err := tq.stopper.RunAsyncTask(ctx, "metronome-timeout", func(ctx context.Context) {
 		select {
 		case <-timer.C:
 			onTimeout()
 		case <-timeout:
 			if !timer.Stop() {
-				<-timer.C // Drain the channel to avoid leaks
+				<-timer.C // Drain to prevent goroutine leak
+			}
+		case <-tq.stopper.ShouldQuiesce():
+			log.Info(ctx, "Stopping the timeout...")
+			if !timer.Stop() {
+				<-timer.C
+			}
+		case <-ctx.Done():
+			log.Info(ctx, "Context is done...")
+			if !timer.Stop() {
+				<-timer.C
 			}
 		}
-	}()
+	})
+	if err != nil {
+		log.Warningf(ctx, "Error while running timeout: %s\n", err.Error())
+	}
 }
 
-func (tq *timeoutQueue) cancelTimeout(index raftpb.Index) {
+func (tq *timeoutQueue) cancelTimeout(ctx context.Context, index raftpb.Index) {
 	// This was an index which was flushed so no need to cancel anything
-	if tq.queue[index] == nil {
+	tout, ok := tq.queue[index]
+	if !ok {
+		log.Info(ctx, "No timeout was found proceed")
 		return
 	}
 
-	close(tq.queue[index])
-	tq.queue[index] = nil
+	log.Info(ctx, "delete timeout")
+	close(tout)
+	delete(tq.queue, index)
+	log.Info(ctx, "deleted timeout success")
 }
 
 // RaftLogMap Logic for allowing logs with gaps
 type RaftLogMap struct {
+	sync.Mutex
 	entries []raftpb.Entry
 }
 
 func NewRaftLogMap() RaftLogMap {
 	return RaftLogMap{
-		entries: make([]raftpb.Entry, 0, 0),
+		entries: make([]raftpb.Entry, 0),
 	}
 }
 
@@ -148,19 +171,9 @@ func (rlm *RaftLogMap) MergeRaftLogs(otherEntries []raftpb.Entry) {
 	}
 
 	var mergedEntries []raftpb.Entry
-	var index uint64
-	if rlm.entries[0].Index < otherEntries[0].Index {
-		index = rlm.entries[0].Index
-	} else {
-		index = otherEntries[0].Index
-	}
 
-	var maxIndex uint64
-	if rlm.entries[len(rlm.entries)-1].Index > otherEntries[len(otherEntries)-1].Index {
-		maxIndex = rlm.entries[len(rlm.entries)-1].Index
-	} else {
-		maxIndex = otherEntries[len(otherEntries)-1].Index
-	}
+	index := min(rlm.entries[0].Index, otherEntries[0].Index)
+	maxIndex := max(rlm.entries[len(rlm.entries)-1].Index, otherEntries[len(otherEntries)-1].Index)
 
 	j := 0
 	i := 0
@@ -201,14 +214,14 @@ type Metronome struct {
 	unflushedEntries RaftLogMap
 }
 
-func InitializeMetronome(replicaID roachpb.ReplicaID) *Metronome {
-	m := &Metronome{
+func InitializeMetronome(replicaID roachpb.ReplicaID, stopper *stop.Stopper) *Metronome {
+	m := Metronome{
 		replicaID:        replicaID,
-		inflightQueue:    newTimeoutQueue(),
+		inflightQueue:    newTimeoutQueue(stopper),
 		unflushedEntries: NewRaftLogMap(),
 	}
 
-	return m
+	return &m
 }
 
 func (m *Metronome) GetUnflushedEntries() *RaftLogMap {
@@ -223,13 +236,14 @@ func (m *Metronome) GetSchemes() [][]roachpb.ReplicaID {
 	return m.schemes
 }
 
-func (m *Metronome) Commit(toApply []raftpb.Entry) {
+func (m *Metronome) Commit(ctx context.Context, toApply []raftpb.Entry) {
+	log.Info(ctx, "Committing")
 	if m == nil {
 		return
 	}
 
 	for _, ent := range toApply {
-		m.inflightQueue.cancelTimeout(raftpb.Index(ent.Index))
+		m.inflightQueue.cancelTimeout(ctx, raftpb.Index(ent.Index))
 	}
 }
 
@@ -269,6 +283,10 @@ func (m *Metronome) GetMissingIndices(lo, hi uint64, flushedIndices []uint64) []
 }
 
 func (m *Metronome) ShouldRebalance(otherScheme []roachpb.ReplicaID) bool {
+	if m == nil {
+		return false
+	}
+
 	// At least three replicas are required in crdb as such a quorum length of 2 is needed
 	if len(otherScheme) < 2 {
 		return false
@@ -300,9 +318,10 @@ func (m *Metronome) ShouldRebalance(otherScheme []roachpb.ReplicaID) bool {
 	return false
 }
 
-func (m *Metronome) FilterEntries(entries []raftpb.Entry, cb func(ent raftpb.Entry)) ([]raftpb.Entry, raftpb.Entry) {
-	min := 200  // milliseconds
-	max := 1000 // milliseconds
+func (m *Metronome) FilterEntries(ctx context.Context, entries []raftpb.Entry, cb func(ent raftpb.Entry)) ([]raftpb.Entry, raftpb.Entry) {
+	log.Infof(ctx, "Filtering Entries\n")
+	min := 100 // milliseconds
+	max := 150 // milliseconds
 	randomMs := rand.Intn(max-min+1) + min
 	duration := time.Duration(randomMs) * time.Millisecond
 
@@ -314,16 +333,21 @@ func (m *Metronome) FilterEntries(entries []raftpb.Entry, cb func(ent raftpb.Ent
 		shouldFlush := m.shouldFlush(ent.Index)
 
 		if shouldFlush {
+			log.Info(ctx, "Flushing")
 			unfilteredEntries = append(unfilteredEntries, ent)
 		} else {
-			m.inflightQueue.addTimeout(raftpb.Index(ent.Index), duration, func() {
+			m.inflightQueue.addTimeout(ctx, raftpb.Index(ent.Index), duration, func() {
 				cb(ent)
+				m.unflushedEntries.Lock()
+				defer m.unflushedEntries.Unlock()
 				m.unflushedEntries.Remove(ent.Index)
 			})
 			filteredEntries = append(filteredEntries, ent)
 		}
 	}
 
+	m.unflushedEntries.Lock()
+	defer m.unflushedEntries.Unlock()
 	m.unflushedEntries.Add(filteredEntries)
 
 	return unfilteredEntries, lastEntry

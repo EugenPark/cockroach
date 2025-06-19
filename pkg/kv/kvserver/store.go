@@ -51,10 +51,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/multiqueue"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/raftentry"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/raftlog"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rangefeed"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rditer"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/storeliveness"
 	slpb "github.com/cockroachdb/cockroach/pkg/kv/kvserver/storeliveness/storelivenesspb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/tenantrate"
@@ -1161,8 +1159,6 @@ type Store struct {
 
 	// diskMonitor provides metrics for the disk associated with this store.
 	diskMonitor *disk.Monitor
-
-	metronome map[roachpb.RangeID]*logstore.Metronome
 }
 
 var _ kv.Sender = &Store{}
@@ -2311,7 +2307,6 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 	}
 	logEvery := log.Every(10 * time.Second)
 
-	s.metronome = make(map[roachpb.RangeID]*logstore.Metronome, len(repls))
 	for i, repl := range repls {
 		// Log progress regularly, but not for the first replica (we only want to
 		// log when this is slow). The last replica is logged after iteration.
@@ -2324,24 +2319,7 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 			continue
 		}
 
-		s.metronome[repl.RangeID] = logstore.InitializeMetronome(repl.ReplicaID)
-		schemes := repl.Desc.GetAllQuorums()
-		logstore.RebalanceQuorums(schemes)
-		s.metronome[repl.RangeID].SetSchemes(schemes)
-
-		sl := stateloader.Make(repl.RangeID)
-		err := s.recoverLog(context.TODO(), &repl, sl, s.metronome[repl.RangeID])
-		if err != nil {
-			return err
-		}
-
-		// TODO(pavelkalinnikov): integrate into kvstorage.LoadAndReconcileReplicas.
-		state, err := repl.Load(ctx, s.TODOEngine(), s.StoreID(), s.metronome[repl.RangeID], sl)
-		if err != nil {
-			return err
-		}
-
-		rep, err := newInitializedReplica(s, state, true /* waitForPrevLeaseToExpire */)
+		rep, err := newInitializedReplica(s, repl, true /* waitForPrevLeaseToExpire */)
 		if err != nil {
 			return err
 		}
@@ -2467,228 +2445,7 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 	return nil
 }
 
-type recoveryResponse struct {
-	entries  []raftpb.Entry
-	snapshot *RecoverySnapshot
-	err      error
-}
-
-func (s *Store) recoverLog(
-	ctx context.Context,
-	repl *kvstorage.Replica,
-	sl stateloader.StateLoader,
-	metronome *logstore.Metronome,
-) error {
-	// Immutable
-	replicas := repl.Desc.Replicas().Descriptors()
-	if len(replicas) < 2 {
-		return nil
-	}
-	reader := s.TODOEngine().NewReader(storage.StandardDurability)
-	writer := s.TODOEngine().NewBatch()
-	defer writer.Close()
-
-	// Mutable
-	responses := make(chan recoveryResponse, len(replicas)/2)
-	var inFlightRequests uint64
-
-	// Helpers
-	isOwnNode := func(replica roachpb.ReplicaDescriptor) bool {
-		return replica.NodeID == s.NodeID()
-	}
-
-	sidel := logstore.NewDiskSideloadStorage(
-		s.cfg.Settings,
-		repl.RangeID,
-		s.TODOEngine().GetAuxiliaryDir(),
-		s.limiters.BulkIOWriteRate,
-		s.TODOEngine(),
-	)
-
-	eCache := raftentry.NewCache(math.MaxUint64)
-
-	// Fetch own log from disk
-	ownEntries, err := s.GetUntruncatedLogEntriesRaftMu(ctx, sl, sidel, eCache, repl.RangeID, 0)
-	if err != nil {
-		return err
-	}
-
-	var lo, hi uint64
-	if len(ownEntries) > 0 {
-		lo = ownEntries[0].Index
-		hi = ownEntries[len(ownEntries)-1].Index
-	} else {
-		lo = 0
-		hi = math.MaxUint64
-	}
-
-	flushedIndices := make([]uint64, 0, len(ownEntries))
-	for _, ent := range ownEntries {
-		flushedIndices = append(flushedIndices, ent.Index)
-	}
-
-	// TODO: Add exclude entries as a param here
-	missingIndices := metronome.GetMissingIndices(lo, hi, flushedIndices)
-
-	// Query other nodes for log entries
-	for _, replica := range replicas {
-		// Skip own replica
-		if isOwnNode(replica) {
-			continue
-		}
-
-		rep := replica // Deep copy works because all fields are values
-		inFlightRequests++
-		go func() {
-			resp, err := s.getUntruncatedLogFromReplica(ctx, rep, repl.RangeID, missingIndices)
-			if err != nil {
-				responses <- recoveryResponse{
-					err: err,
-				}
-				return
-			}
-
-			responses <- recoveryResponse{entries: resp.Entries, snapshot: resp.RecoverySnap}
-		}()
-	}
-
-	if inFlightRequests == 0 {
-		// We do not expect any answers so there is nothing to recover from
-		// fmt.Println("Recover Log Done no requests")
-		return nil
-	}
-
-	raftLogPrefix := append([]byte(nil), sl.RaftLogPrefix()...)
-	for resp := range responses {
-
-		// Bookkeeping
-		inFlightRequests--
-		if inFlightRequests == 0 {
-			close(responses)
-		}
-
-		if resp.err != nil {
-			return resp.err
-		}
-
-		// Fast Path
-		// TODO: Sideload the entries perhaps?
-		entries := resp.entries
-		if len(entries) > 0 {
-			var newEntries []raftpb.Entry
-			for _, ent := range entries {
-				if index := slices.Index(missingIndices, ent.Index); index != -1 {
-					missingIndices = slices.Delete(missingIndices, index, index+1)
-					newEntries = append(newEntries, ent)
-				}
-			}
-			entries = newEntries
-
-			thinEntries, _, err := logstore.MaybeSideloadEntries(ctx, entries, sidel)
-			if err != nil {
-				return err
-			}
-
-			metronome.GetUnflushedEntries().Add(thinEntries)
-			continue
-		}
-
-		// Slow Path
-		if resp.snapshot == nil {
-			return nil
-		}
-
-		snap := resp.snapshot.Snapshot
-		state := resp.snapshot.ReplicaState
-
-		ts := &kvserverpb.RaftTruncatedState{
-			Index: kvpb.RaftIndex(snap.Metadata.Index),
-			Term:  kvpb.RaftTerm(snap.Metadata.Term),
-		}
-
-		hs, err := sl.LoadHardState(ctx, reader)
-		if err != nil {
-			return err
-		}
-		hs.Commit = snap.Metadata.Index
-
-		// Write new hard state
-		if err := sl.SetHardState(ctx, writer, hs); err != nil {
-			return err
-		}
-
-		// Write new truncated state
-		if err := sl.SetRaftTruncatedState(ctx, writer, ts); err != nil {
-			return err
-		}
-
-		// Write application state
-		if _, err := sl.Save(ctx, writer, state); err != nil {
-			return err
-		}
-
-		// Clear log entries
-		for _, ent := range ownEntries {
-			key := keys.RaftLogKeyFromPrefix(raftLogPrefix, kvpb.RaftIndex(ent.Index))
-			_, _, err := storage.MVCCDelete(ctx, writer, key, hlc.Timestamp{}, storage.MVCCWriteOptions{})
-			if err != nil {
-				return err
-			}
-		}
-
-		// Clear metronome
-		metronome.GetUnflushedEntries().Compact(snap.Metadata.Index)
-
-		if err := writer.Commit(true); err != nil {
-			return err
-		}
-
-		break
-	}
-
-	metronome.GetUnflushedEntries().Sort()
-
-	return nil
-}
-
-func (s *Store) GetUntruncatedLogEntriesRaftMu(ctx context.Context, sl stateloader.StateLoader, sidel logstore.SideloadStorage, eCache *raftentry.Cache, rangeID roachpb.RangeID, fromIndex uint64) ([]raftpb.Entry, error) {
-	reader := s.TODOEngine().NewReader(storage.StandardDurability)
-
-	ts, err := sl.LoadRaftTruncatedState(ctx, reader)
-	if err != nil {
-		return nil, err
-	}
-
-	lastEntID, err := sl.LoadLastEntryID(ctx, reader, ts, s.metronome[rangeID])
-	if err != nil {
-		return nil, err
-	}
-
-	var ents []raftpb.Entry
-	scanFunc := func(ent raftpb.Entry) error {
-		if typ, _, err := raftlog.EncodingOf(ent); err != nil {
-			return err
-		} else if typ.IsSideloaded() {
-			if ent, err = logstore.MaybeInlineSideloadedRaftCommand(
-				ctx, rangeID, ent, sidel, eCache,
-			); err != nil {
-				return err
-			}
-		}
-
-		ents = append(ents, ent)
-
-		return nil
-	}
-
-	if err := raftlog.Visit(ctx, reader, rangeID, kvpb.RaftIndex(fromIndex), lastEntID.Index+1, scanFunc); err != nil {
-		return nil, err
-	}
-
-	return ents, nil
-}
-
-func (s *Store) getUntruncatedLogFromReplica(
+func (s *Store) GetUntruncatedLogFromReplica(
 	ctx context.Context, replica roachpb.ReplicaDescriptor, rangeID roachpb.RangeID, missingIndices []uint64,
 ) (GetUntruncatedLogResponse, error) {
 	conn, err := s.cfg.NodeDialer.Dial(ctx, replica.NodeID, rpc.DefaultClass)
@@ -4504,10 +4261,6 @@ func (s *storeForTruncatorImpl) getEngine() storage.Engine {
 	// TODO(sep-raft-log): we'll need the log engine here but need
 	// to read code to see if more needs to be done.
 	return (*Store)(s).TODOEngine()
-}
-
-func (s *storeForTruncatorImpl) getMetronome(rangeID roachpb.RangeID) *logstore.Metronome {
-	return (*Store)(s).metronome[rangeID]
 }
 
 func init() {

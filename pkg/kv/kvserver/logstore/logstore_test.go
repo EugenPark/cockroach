@@ -24,11 +24,17 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/testutils/echotest"
+	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
+	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/stretchr/testify/require"
 )
 
 func TestRaftStorageWrites(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
 	ctx := context.Background()
 	const rangeID = roachpb.RangeID(123)
 	schemes := [][]roachpb.ReplicaID{
@@ -43,7 +49,9 @@ func TestRaftStorageWrites(t *testing.T) {
 		{3, 4, 5},
 		{2, 4, 5},
 	}
-	metronome := InitializeMetronome(1)
+	stopper := stop.NewStopper()
+	defer stopper.Stop(ctx)
+	metronome := InitializeMetronome(1, stopper)
 	metronome.SetSchemes(schemes)
 	sl := NewStateLoader(rangeID)
 	eng := storage.NewDefaultInMemForTesting()
@@ -85,7 +93,7 @@ func TestRaftStorageWrites(t *testing.T) {
 		batch := writeBatch(func(rw storage.ReadWriter) {
 			require.NoError(t, StoreHardState(ctx, rw, sl, hs))
 			var err error
-			entriesToFlush, lastEntry := metronome.FilterEntries(entries, func(ent raftpb.Entry) {})
+			entriesToFlush, lastEntry := metronome.FilterEntries(ctx, entries, func(ent raftpb.Entry) {})
 			newState, err = logAppend(ctx, sl.RaftLogPrefix(), rw, state, lastEntry, entriesToFlush)
 			require.NoError(t, err)
 		})
@@ -197,6 +205,9 @@ func ents(inds ...uint64) []raftpb.Entry {
 }
 
 func TestRaftStorageLoad(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
 	ctx := context.Background()
 	const rangeID = roachpb.RangeID(123)
 	schemes := [][]roachpb.ReplicaID{
@@ -211,8 +222,9 @@ func TestRaftStorageLoad(t *testing.T) {
 		{3, 4, 5},
 		{2, 4, 5},
 	}
-
-	m := InitializeMetronome(roachpb.ReplicaID(2))
+	stopper := stop.NewStopper()
+	defer stopper.Stop(ctx)
+	m := InitializeMetronome(roachpb.ReplicaID(2), stopper)
 	m.SetSchemes(schemes)
 	sl := NewStateLoader(rangeID)
 	entryCache := raftentry.NewCache(2048)
@@ -223,7 +235,7 @@ func TestRaftStorageLoad(t *testing.T) {
 
 	entries := ents(1, 2, 3, 4, 5)
 
-	filteredEntries, _ := m.FilterEntries(entries, func(ent raftpb.Entry) {})
+	filteredEntries, _ := m.FilterEntries(ctx, entries, func(ent raftpb.Entry) {})
 	raftLogPrefix := sl.RaftLogPrefix()
 	for _, ent := range filteredEntries {
 		e, err := raftlog.NewEntry(ent)

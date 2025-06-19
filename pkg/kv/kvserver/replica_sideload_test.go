@@ -180,7 +180,7 @@ func TestRaftSSTableSideloading(t *testing.T) {
 	tc.store.raftEntryCache.Clear(tc.repl.RangeID, last)
 	ents, cachedBytes, _, err := logstore.LoadEntries(
 		ctx, rsl, tc.store.TODOEngine(), tc.repl.RangeID, tc.store.raftEntryCache,
-		tc.repl.raftMu.sideloaded, comp+1, last+1, math.MaxUint64, nil /* account */, logstore.InitializeMetronome(1))
+		tc.repl.raftMu.sideloaded, comp+1, last+1, math.MaxUint64, nil /* account */, tc.repl.LogStorageRaftMuLocked().Metronome)
 	require.NoError(t, err)
 	require.Len(t, ents, int(last-comp))
 	require.Zero(t, cachedBytes)

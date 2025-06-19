@@ -10,8 +10,6 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
@@ -203,15 +201,6 @@ func (s *Store) tryGetOrCreateReplica(
 	// RangeTombstone in storage for this rangeID is "locked" because it can only
 	// be accessed by someone holding a reference to, or currently creating a
 	// Replica for this rangeID, and that's us.
-
-	s.metronome[rangeID] = logstore.InitializeMetronome(replicaID)
-	if err := kvstorage.CreateUninitializedReplica(
-		// TODO(sep-raft-log): needs both engines due to tombstone (which lives on
-		// statemachine).
-		ctx, s.TODOEngine(), s.StoreID(), rangeID, replicaID, s.metronome[rangeID],
-	); err != nil {
-		return nil, false, err
-	}
 
 	// Create a new uninitialized replica and lock it for raft processing.
 	repl, err := newUninitializedReplica(s, rangeID, replicaID)

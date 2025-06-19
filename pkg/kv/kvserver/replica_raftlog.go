@@ -61,6 +61,7 @@ func (r *replicaLogStorage) entriesLocked(
 	// TODO(pav-kv): we have a large class of cases when we would rather only hold
 	// raftMu while reading the entries. The r.mu lock should be narrow.
 	r.mu.AssertHeld()
+	r.raftMu.AssertHeld()
 	// Writes to the storage engine and the sideloaded storage are made under
 	// raftMu only. Since we are holding r.mu, but may or may not be holding
 	// raftMu, this read could be racing with a write.
@@ -82,7 +83,7 @@ func (r *replicaLogStorage) entriesLocked(
 		r.mu.stateLoader.StateLoader, r.store.TODOEngine(), r.RangeID,
 		r.store.raftEntryCache, r.raftMu.sideloaded, lo, hi, maxBytes,
 		nil, // bytesAccount is not used when reading under Replica.mu
-		r.store.metronome[r.RangeID],
+		r.raftMu.logStorage.Metronome,
 	)
 	r.store.metrics.RaftStorageReadBytes.Inc(int64(loadedSize))
 	return entries, err
@@ -114,7 +115,7 @@ func (r *replicaLogStorage) termLocked(i kvpb.RaftIndex) (kvpb.RaftTerm, error) 
 	}
 	return logstore.LoadTerm(r.AnnotateCtx(context.TODO()),
 		r.mu.stateLoader.StateLoader, r.store.TODOEngine(), r.RangeID,
-		r.store.raftEntryCache, i, r.store.metronome[r.RangeID],
+		r.store.raftEntryCache, i, r.raftMu.logStorage.Metronome,
 	)
 }
 
@@ -224,7 +225,7 @@ func (r *replicaRaftMuLogSnap) entriesRaftMuLocked(
 		r.raftMu.stateLoader.StateLoader, r.store.TODOEngine(), r.RangeID,
 		r.store.raftEntryCache, r.raftMu.sideloaded, lo, hi, maxBytes,
 		&r.raftMu.bytesAccount,
-		r.store.metronome[r.RangeID],
+		r.raftMu.logStorage.Metronome,
 	)
 	r.store.metrics.RaftStorageReadBytes.Inc(int64(loadedSize))
 	return entries, err
@@ -250,7 +251,7 @@ func (r *replicaRaftMuLogSnap) termRaftMuLocked(i kvpb.RaftIndex) (kvpb.RaftTerm
 	}
 	return logstore.LoadTerm(r.AnnotateCtx(context.TODO()),
 		r.raftMu.stateLoader.StateLoader, r.store.TODOEngine(), r.RangeID,
-		r.store.raftEntryCache, i, r.store.metronome[r.RangeID],
+		r.store.raftEntryCache, i, r.raftMu.logStorage.Metronome,
 	)
 }
 

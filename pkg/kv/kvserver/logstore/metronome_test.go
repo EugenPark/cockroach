@@ -1,11 +1,15 @@
 package logstore
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
+	"github.com/cockroachdb/cockroach/pkg/util/stop"
 )
 
 // Helper
@@ -248,7 +252,12 @@ func TestGetMissingIndices(t *testing.T) {
 
 // Test Timeoutqueue
 func TestTimeoutQueue(t *testing.T) {
-	tq := newTimeoutQueue()
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	stopper := stop.NewStopper()
+	defer stopper.Stop(context.Background())
+	tq := newTimeoutQueue(stopper)
 
 	val := 1
 	changeVal := func() {

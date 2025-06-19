@@ -117,8 +117,7 @@ LIMIT
 	rsl := logstore.NewStateLoader(rangeID)
 	ts, err := rsl.LoadRaftTruncatedState(ctx, eng)
 	require.NoError(t, err)
-	metronome := logstore.InitializeMetronome(1)
-	lastEntryID, err := rsl.LoadLastEntryID(ctx, eng, ts, metronome)
+	lastEntryID, err := rsl.LoadLastEntryID(ctx, eng, ts, nil /* metronome can be ignored because everything is on disk*/)
 	require.NoError(t, err)
 	t.Logf("loaded LastEntryID: %+v", lastEntryID)
 	lastIndex := lastEntryID.Index
@@ -226,6 +225,7 @@ LIMIT
 			SyncWaiter:  swl,
 			EntryCache:  raftentry.NewCache(1024),
 			Settings:    st,
+			Metronome:   logstore.InitializeMetronome(1, stopper),
 		}
 
 		wg := &sync.WaitGroup{}
@@ -233,7 +233,7 @@ LIMIT
 		_, err = ls.StoreEntries(ctx, logstore.RaftState{
 			LastIndex: lastIndex,
 			LastTerm:  kvpb.RaftTerm(lastTerm),
-		}, app, (*wgSyncCallback)(wg), stats, metronome)
+		}, app, (*wgSyncCallback)(wg), stats)
 		require.NoError(t, err)
 		wg.Wait()
 

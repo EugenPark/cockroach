@@ -8,6 +8,7 @@ package logstore
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"math/rand"
 	"slices"
@@ -134,6 +135,7 @@ type LogStore struct {
 	SyncWaiter  *SyncWaiterLoop
 	EntryCache  *raftentry.Cache
 	Settings    *cluster.Settings
+	Metronome   *Metronome
 
 	DisableSyncLogWriteToss bool // for testing only
 }
@@ -166,10 +168,10 @@ func newStoreEntriesBatch(eng storage.Engine) storage.Batch {
 // Accepts the state of the log before the operation, returns the state after.
 // Persists HardState atomically with, or strictly after Entries.
 func (s *LogStore) StoreEntries(
-	ctx context.Context, state RaftState, app raft.StorageAppend, cb SyncCallback, stats *AppendStats, metronome *Metronome,
+	ctx context.Context, state RaftState, app raft.StorageAppend, cb SyncCallback, stats *AppendStats,
 ) (RaftState, error) {
 	batch := newStoreEntriesBatch(s.Engine)
-	return s.storeEntriesAndCommitBatch(ctx, state, app, cb, stats, batch, metronome)
+	return s.storeEntriesAndCommitBatch(ctx, state, app, cb, stats, batch)
 }
 
 // storeEntriesAndCommitBatch is like StoreEntries, but it accepts a
@@ -181,7 +183,6 @@ func (s *LogStore) storeEntriesAndCommitBatch(
 	cb SyncCallback,
 	stats *AppendStats,
 	batch storage.Batch,
-	metronome *Metronome,
 ) (RaftState, error) {
 	// Before returning, Close the batch if we haven't handed ownership of it to a
 	// SyncWaiterLoop. If batch == nil, SyncWaiterLoop is responsible for closing
@@ -203,6 +204,12 @@ func (s *LogStore) storeEntriesAndCommitBatch(
 		raftLogPrefix := slices.Clone(s.StateLoader.RaftLogPrefix())
 
 		delayedWrite := func(ent raftpb.Entry) {
+			// Check if the engine is still open
+			if s.Engine.Closed() {
+				log.Warningf(context.Background(), "Engine is closed, skipping delayed write")
+				return
+			}
+
 			delayedBatch := newStoreEntriesBatch(s.Engine)
 			defer delayedBatch.Close()
 
@@ -233,7 +240,7 @@ func (s *LogStore) storeEntriesAndCommitBatch(
 			return RaftState{}, errors.Wrap(err, expl)
 		}
 
-		entriesToFlush, lastEntry := metronome.FilterEntries(thinEntries, delayedWrite)
+		entriesToFlush, lastEntry := s.Metronome.FilterEntries(ctx, thinEntries, delayedWrite)
 
 		stats.EntryStats.Add(entryStats) // TODO(pav-kv): just return the stats.
 		state.ByteSize += entryStats.SideloadedBytes
@@ -798,6 +805,48 @@ func LoadEntries(
 	// Even though metronome and the disk seemed to have the correct entries respectively
 	// Might be even a off by one error such as returning too many values etc however would
 	// need to confirm this if this happens frequently
+	fmt.Printf("flushed: [")
+	for _, ent := range flushedEntries {
+		fmt.Printf("%d, ", ent.Index)
+	}
+	fmt.Printf("]\n")
 
+	fmt.Printf("metronome: [")
+	for _, ent := range m.GetUnflushedEntries().entries {
+		fmt.Printf("%d, ", ent.Index)
+	}
+	fmt.Printf("]\n")
+
+	fmt.Printf("log: [")
+	for _, ent := range ents {
+		fmt.Printf("%d, ", ent.Index)
+	}
+	fmt.Printf("]\n")
 	return nil, 0, 0, raft.ErrUnavailable
+}
+
+// Retrieves the log entries written to disk for [lo, hi]
+func LoadDiskEntries(ctx context.Context, eng storage.Reader, sl SideloadStorage, eCache *raftentry.Cache, rangeID roachpb.RangeID, lo, hi uint64) ([]raftpb.Entry, error) {
+	var ents []raftpb.Entry
+	scanFunc := func(ent raftpb.Entry) error {
+		if typ, _, err := raftlog.EncodingOf(ent); err != nil {
+			return err
+		} else if typ.IsSideloaded() {
+			if ent, err = MaybeInlineSideloadedRaftCommand(
+				ctx, rangeID, ent, sl, eCache,
+			); err != nil {
+				return err
+			}
+		}
+
+		ents = append(ents, ent)
+
+		return nil
+	}
+
+	if err := raftlog.Visit(ctx, eng, rangeID, kvpb.RaftIndex(lo), kvpb.RaftIndex(hi+1), scanFunc); err != nil {
+		return nil, err
+	}
+
+	return ents, nil
 }

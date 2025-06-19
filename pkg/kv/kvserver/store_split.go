@@ -240,7 +240,7 @@ func prepareRightReplicaForSplit(
 	// Finish initialization of the RHS replica.
 
 	state, err := kvstorage.LoadReplicaState(
-		ctx, r.store.TODOEngine(), r.StoreID(), &split.RightDesc, rightRepl.replicaID, r.store.metronome[rightRepl.RangeID])
+		ctx, r.store.TODOEngine(), r.StoreID(), &split.RightDesc, rightRepl.replicaID, rightRepl.LogStorageRaftMuLocked().Metronome)
 	if err != nil {
 		log.Fatalf(ctx, "%v", err)
 	}

@@ -111,6 +111,7 @@ type replicaTruncatorTest struct {
 	rangeID         roachpb.RangeID
 	buf             *strings.Builder
 	stateLoader     stateloader.StateLoader
+	metronome       *logstore.Metronome
 	truncState      kvserverpb.RaftTruncatedState
 	pendingTruncs   pendingLogTruncations
 	sideloadedFreed int64
@@ -119,12 +120,17 @@ type replicaTruncatorTest struct {
 
 var _ replicaForTruncator = &replicaTruncatorTest{}
 
-func makeReplicaTT(rangeID roachpb.RangeID, buf *strings.Builder) *replicaTruncatorTest {
+func makeReplicaTT(rangeID roachpb.RangeID, buf *strings.Builder, stopper *stop.Stopper) *replicaTruncatorTest {
 	return &replicaTruncatorTest{
 		rangeID:     rangeID,
 		buf:         buf,
 		stateLoader: stateloader.Make(rangeID),
+		metronome:   logstore.InitializeMetronome(1, stopper),
 	}
+}
+
+func (r *replicaTruncatorTest) getMetronome() *logstore.Metronome {
+	return r.metronome
 }
 
 func (r *replicaTruncatorTest) getRangeID() roachpb.RangeID {
@@ -302,7 +308,7 @@ func TestRaftLogTruncator(t *testing.T) {
 				d.ScanArgs(t, "trunc-index", &truncIndex)
 				var lastLogEntry uint64
 				d.ScanArgs(t, "last-log-entry", &lastLogEntry)
-				r := makeReplicaTT(rangeID, &buf)
+				r := makeReplicaTT(rangeID, &buf, stopper)
 				r.truncState.Index = kvpb.RaftIndex(truncIndex)
 				r.writeRaftStateToEngine(t, eng, kvpb.RaftIndex(truncIndex), kvpb.RaftIndex(lastLogEntry))
 				store.replicas[rangeID] = r

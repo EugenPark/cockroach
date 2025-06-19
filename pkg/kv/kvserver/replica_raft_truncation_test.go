@@ -24,6 +24,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
+	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/datadriven"
 	"github.com/stretchr/testify/require"
 )
@@ -36,6 +37,7 @@ func TestHandleTruncatedStateBelowRaft(t *testing.T) {
 	// truncation code.
 
 	ctx := context.Background()
+	stopper := stop.NewStopper()
 	datadriven.Walk(t, datapathutils.TestDataPath(t, "truncated_state"), func(t *testing.T, path string) {
 		const rangeID = 12
 		loader := logstore.NewStateLoader(rangeID)
@@ -97,9 +99,10 @@ func TestHandleTruncatedStateBelowRaft(t *testing.T) {
 					}
 				}
 
+				m := logstore.InitializeMetronome(1, stopper)
 				// Apply truncation.
 				require.NoError(t, handleTruncatedStateBelowRaftPreApply(
-					ctx, currentTruncatedState, suggestedTruncatedState, loader, eng, logstore.InitializeMetronome(1),
+					ctx, currentTruncatedState, suggestedTruncatedState, loader, eng, m,
 				))
 
 				// Check the truncated state.

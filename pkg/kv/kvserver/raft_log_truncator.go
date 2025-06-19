@@ -228,8 +228,6 @@ type storeForTruncator interface {
 	releaseReplicaForTruncator(r replicaForTruncator)
 	// Engine accessor.
 	getEngine() storage.Engine
-	// Metronome is needed during compaction
-	getMetronome(rangeID roachpb.RangeID) *logstore.Metronome
 }
 
 // replicaForTruncator abstracts the interface of Replica needed by the
@@ -265,6 +263,9 @@ type replicaForTruncator interface {
 	getStateLoader() stateloader.StateLoader
 	// NB: Setting the persistent raft state is via the Engine exposed by
 	// storeForTruncator.
+
+	// Metronome is needed during compaction
+	getMetronome() *logstore.Metronome
 }
 
 // raftExpectedFirstIndex and raftLogDelta have the same meaning as in
@@ -552,7 +553,7 @@ func (t *raftLogTruncator) tryEnactTruncations(
 	defer batch.Close()
 	if err := handleTruncatedStateBelowRaftPreApply(ctx, truncState,
 		pendingTruncs.mu.truncs[enactIndex].RaftTruncatedState,
-		stateLoader.StateLoader, batch, t.store.getMetronome(rangeID),
+		stateLoader.StateLoader, batch, r.getMetronome(),
 	); err != nil {
 		log.Errorf(ctx, "while attempting to truncate raft log: %+v", err)
 		pendingTruncs.reset()

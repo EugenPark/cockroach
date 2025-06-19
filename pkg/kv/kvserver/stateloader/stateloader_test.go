@@ -20,6 +20,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
+	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/stretchr/testify/require"
 )
 
@@ -106,9 +107,11 @@ func TestLoadLastEntryID(t *testing.T) {
 	defer batch.Close()
 	reader := eng.NewReader(storage.StandardDurability)
 	defer reader.Close()
+	stopper := stop.NewStopper()
+	defer stopper.Stop(context.Background())
 
 	desc := roachpb.RangeDescriptor{RangeID: 123}
-	metronome := logstore.InitializeMetronome(1)
+	metronome := logstore.InitializeMetronome(1, stopper)
 	sl := Make(desc.RangeID)
 
 	entries := ents(1, 2, 3, 4, 5)

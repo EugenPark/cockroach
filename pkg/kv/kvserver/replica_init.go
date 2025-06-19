@@ -29,6 +29,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
+	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
@@ -65,25 +66,54 @@ func loadInitializedReplicaForTesting(
 	if !desc.IsInitialized() {
 		return nil, errors.AssertionFailedf("can not load with uninitialized descriptor: %s", desc)
 	}
-	state, err := kvstorage.LoadReplicaState(ctx, store.TODOEngine(), store.StoreID(), desc, replicaID, logstore.InitializeMetronome(replicaID))
+	reader := store.TODOEngine().NewReader(storage.StandardDurability)
+	defer reader.Close()
+
+	metronome := logstore.InitializeMetronome(replicaID, store.stopper)
+	state, err := kvstorage.LoadReplicaState(ctx, reader, store.StoreID(), desc, replicaID, metronome)
 	if err != nil {
 		return nil, err
 	}
 
-	// No need to wait for previous lease to expire since this is only used in
-	// tests and some tests don't expect the extra delay.
-	return newInitializedReplica(store, state, false /* waitForPrevLeaseToExpire */)
-}
-
-// newInitializedReplica creates an initialized Replica from its loaded state.
-func newInitializedReplica(
-	store *Store, loaded kvstorage.LoadedReplicaState, waitForPrevLeaseToExpire bool,
-) (*Replica, error) {
-	r := newUninitializedReplicaWithoutRaftGroup(store, loaded.ReplState.Desc.RangeID, loaded.ReplicaID)
+	r := newUninitializedReplicaWithoutRaftGroup(store, desc.RangeID, state.ReplicaID)
 	r.raftMu.Lock()
 	defer r.raftMu.Unlock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// No need to wait for previous lease to expire since this is only used in
+	// tests and some tests don't expect the extra delay.
+	if err := r.initRaftMuLockedReplicaMuLocked(state, false); err != nil {
+		return nil, err
+	}
+
+	return r, nil
+}
+
+// newInitializedReplica creates an initialized Replica from its loaded state.
+func newInitializedReplica(
+	store *Store, repl kvstorage.Replica, waitForPrevLeaseToExpire bool,
+) (*Replica, error) {
+	r := newUninitializedReplicaWithoutRaftGroup(store, repl.RangeID, repl.ReplicaID)
+	r.raftMu.Lock()
+	defer r.raftMu.Unlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	reader := store.TODOEngine().NewReader(storage.StandardDurability)
+	defer reader.Close()
+
+	ctx := context.Background()
+	ls := r.LogStorageRaftMuLocked()
+	ls.Metronome.SetSchemes(repl.Desc.GetAllQuorums())
+	if err := r.recoverLogRaftMuLocked(ctx, store, repl.Desc.Replicas().Descriptors(), r.mu.stateLoader, r.raftMu.sideloaded, ls.EntryCache, repl.RangeID); err != nil {
+		return nil, err
+	}
+
+	loaded, err := repl.Load(ctx, reader, store.StoreID(), ls.Metronome, r.raftMu.stateLoader)
+	if err != nil {
+		return nil, err
+	}
 
 	if err := r.initRaftMuLockedReplicaMuLocked(loaded, waitForPrevLeaseToExpire); err != nil {
 		return nil, err
@@ -224,6 +254,7 @@ func newUninitializedReplicaWithoutRaftGroup(
 		SyncWaiter: store.syncWaiters[int(rangeID)%len(store.syncWaiters)],
 		EntryCache: store.raftEntryCache,
 		Settings:   store.cfg.Settings,
+		Metronome:  logstore.InitializeMetronome(replicaID, store.stopper),
 		DisableSyncLogWriteToss: buildutil.CrdbTestBuild &&
 			store.TestingKnobs().DisableSyncLogWriteToss,
 	}

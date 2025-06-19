@@ -10,6 +10,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 )
@@ -52,4 +53,8 @@ func (r *raftTruncatorReplica) getStateLoader() stateloader.StateLoader {
 	// the duration of the existence of replicaForTruncator, so we return the
 	// r.raftMu.stateloader (and not r.mu.stateLoader).
 	return r.raftMu.stateLoader
+}
+
+func (r *raftTruncatorReplica) getMetronome() *logstore.Metronome {
+	return r.raftMu.logStorage.Metronome
 }
