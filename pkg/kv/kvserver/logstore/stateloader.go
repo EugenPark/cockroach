@@ -95,7 +95,11 @@ func (sl StateLoader) LoadLastEntryID(
 		last.Term = kvpb.RaftTerm(entry.Term)
 	}
 
-	lastInMem, exists := metronome.GetUnflushedEntries().GetLast()
+	exists := false
+	var lastInMem raftpb.Entry
+	if metronome != nil {
+		lastInMem, exists = metronome.GetUnflushedEntries().GetLast()
+	}
 
 	if last.Index == 0 && !exists {
 		// The log is empty, which means we are either starting from scratch

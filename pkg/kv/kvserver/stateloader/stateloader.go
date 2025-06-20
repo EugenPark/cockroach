@@ -369,6 +369,22 @@ func (rsl StateLoader) SetForceFlushIndex(
 		hlc.Timestamp{}, ffIndex, storage.MVCCWriteOptions{Stats: ms})
 }
 
+// LoadRangeTombstone loads the RangeTombstone of the range.
+func (rsl StateLoader) LoadRangeTombstone(
+	ctx context.Context, reader storage.Reader,
+) (kvserverpb.RangeTombstone, error) {
+	var ts kvserverpb.RangeTombstone
+	if ok, err := storage.MVCCGetProto(
+		ctx, reader, rsl.RangeTombstoneKey(), hlc.Timestamp{}, &ts, storage.MVCCGetOptions{},
+	); err != nil || !ok {
+		// NB: when err == nil && !ok, there is no RangeTombstone. It is valid to
+		// return RangeTombstone{} with a zero NextReplicaID, signifying that there
+		// hasn't been a single replica removed for the RangeID.
+		return kvserverpb.RangeTombstone{}, err
+	}
+	return ts, nil
+}
+
 // UninitializedReplicaState returns the ReplicaState of an uninitialized
 // Replica with the given range ID. It is equivalent to StateLoader.Load from an
 // empty storage.

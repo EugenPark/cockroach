@@ -8,6 +8,7 @@ package kvstorage
 import (
 	"context"
 
+	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
@@ -99,4 +100,47 @@ func (r LoadedReplicaState) check(storeID roachpb.StoreID) error {
 			"%+v does not contain replicaID %d for local store s%d", desc, r.ReplicaID, storeID)
 	}
 	return nil
+}
+
+// CreateUninitializedReplica creates an uninitialized replica in storage.
+// Returns kvpb.RaftGroupDeletedError if this replica can not be created
+// because it has been deleted.
+func CreateUninitializedReplica(
+	ctx context.Context,
+	eng storage.Engine,
+	storeID roachpb.StoreID,
+	rangeID roachpb.RangeID,
+	replicaID roachpb.ReplicaID,
+) error {
+	sl := stateloader.Make(rangeID)
+	// Before creating the replica, see if there is a tombstone which would
+	// indicate that this replica has been removed.
+	// TODO(pav-kv): should also check that there is no existing replica, i.e.
+	// ReplicaID load should find nothing.
+	if ts, err := sl.LoadRangeTombstone(ctx, eng); err != nil {
+		return err
+	} else if replicaID < ts.NextReplicaID {
+		return &kvpb.RaftGroupDeletedError{}
+	}
+
+	// Write the RaftReplicaID for this replica. This is the only place in the
+	// CockroachDB code that we are creating a new *uninitialized* replica.
+	// Note that it is possible that we have already created the HardState for
+	// an uninitialized replica, then crashed, and on recovery are receiving a
+	// raft message for the same or later replica.
+	// - Same replica: we are overwriting the RaftReplicaID with the same
+	//   value, which is harmless.
+	// - Later replica: there may be an existing HardState for the older
+	//   uninitialized replica with Commit=0 and non-zero Term and Vote. Using
+	//   the Term and Vote values for that older replica in the context of
+	//   this newer replica is harmless since it just limits the votes for
+	//   this replica.
+	if err := sl.SetRaftReplicaID(ctx, eng, replicaID); err != nil {
+		return err
+	}
+
+	// Make sure that storage invariants for this uninitialized replica hold.
+	uninitDesc := roachpb.RangeDescriptor{RangeID: rangeID}
+	_, err := LoadReplicaState(ctx, eng, storeID, &uninitDesc, replicaID, nil /* Metronome is nil because replica does not exist yet*/)
+	return err
 }
