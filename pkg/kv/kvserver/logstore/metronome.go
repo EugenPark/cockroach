@@ -45,12 +45,12 @@ func (tq *timeoutQueue) addTimeout(ctx context.Context, index raftpb.Index, dura
 				<-timer.C // Drain to prevent goroutine leak
 			}
 		case <-tq.stopper.ShouldQuiesce():
-			log.Info(ctx, "Stopping the timeout...")
+			// log.Info(ctx, "Stopping the timeout...")
 			if !timer.Stop() {
 				<-timer.C
 			}
 		case <-ctx.Done():
-			log.Info(ctx, "Context is done...")
+			// log.Info(ctx, "Context is done...")
 			if !timer.Stop() {
 				<-timer.C
 			}
@@ -65,14 +65,14 @@ func (tq *timeoutQueue) cancelTimeout(ctx context.Context, index raftpb.Index) {
 	// This was an index which was flushed so no need to cancel anything
 	tout, ok := tq.queue[index]
 	if !ok {
-		log.Info(ctx, "No timeout was found proceed")
+		// log.Info(ctx, "No timeout was found proceed")
 		return
 	}
 
-	log.Info(ctx, "delete timeout")
+	// log.Info(ctx, "delete timeout")
 	close(tout)
 	delete(tq.queue, index)
-	log.Info(ctx, "deleted timeout success")
+	// log.Info(ctx, "deleted timeout success")
 }
 
 // RaftLogMap Logic for allowing logs with gaps
@@ -237,7 +237,7 @@ func (m *Metronome) GetSchemes() [][]roachpb.ReplicaID {
 }
 
 func (m *Metronome) Commit(ctx context.Context, toApply []raftpb.Entry) {
-	log.Info(ctx, "Committing")
+	// log.Info(ctx, "Committing")
 	if m == nil {
 		return
 	}
@@ -319,7 +319,7 @@ func (m *Metronome) ShouldRebalance(otherScheme []roachpb.ReplicaID) bool {
 }
 
 func (m *Metronome) FilterEntries(ctx context.Context, entries []raftpb.Entry, cb func(ent raftpb.Entry)) ([]raftpb.Entry, raftpb.Entry) {
-	log.Infof(ctx, "Filtering Entries\n")
+	// log.Infof(ctx, "Filtering Entries\n")
 	min := 100 // milliseconds
 	max := 150 // milliseconds
 	randomMs := rand.Intn(max-min+1) + min
@@ -333,7 +333,7 @@ func (m *Metronome) FilterEntries(ctx context.Context, entries []raftpb.Entry, c
 		shouldFlush := m.shouldFlush(ent.Index)
 
 		if shouldFlush {
-			log.Info(ctx, "Flushing")
+			// log.Info(ctx, "Flushing")
 			unfilteredEntries = append(unfilteredEntries, ent)
 		} else {
 			m.inflightQueue.addTimeout(ctx, raftpb.Index(ent.Index), duration, func() {

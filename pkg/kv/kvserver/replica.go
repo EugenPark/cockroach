@@ -2988,12 +2988,6 @@ func (r *Replica) recoverLogRaftMuLocked(
 
 	// TODO: Add exclude entries as a param here
 	missingIndices := ls.Metronome.GetMissingIndices(lo, hi, flushedIndices)
-	fmt.Printf("Metronome %#v\n", ls.Metronome)
-	fmt.Printf("Flushed %d, %d: [", lo, hi)
-	for _, index := range flushedIndices {
-		fmt.Printf("%d, ", index)
-	}
-	fmt.Printf("]\n")
 	if len(missingIndices) == 0 {
 		fmt.Printf("RangeID %d: no missing indices\n", r.RangeID)
 		return nil
@@ -3063,6 +3057,7 @@ func (r *Replica) recoverLogRaftMuLocked(
 		}
 
 		// Slow Path
+		log.Info(ctx, "Slow Path@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
 		if resp.snapshot == nil {
 			return nil
 		}
@@ -3075,11 +3070,14 @@ func (r *Replica) recoverLogRaftMuLocked(
 			Term:  kvpb.RaftTerm(snap.Metadata.Term),
 		}
 
-		hs, err := sl.StateLoader.LoadHardState(ctx, reader)
-		if err != nil {
-			return err
+		// hs, err := sl.StateLoader.LoadHardState(ctx, reader)
+		// if err != nil {
+		// 	return err
+		// }
+		hs := raftpb.HardState{
+			Term:   snap.Metadata.Term,
+			Commit: snap.Metadata.Index,
 		}
-		hs.Commit = snap.Metadata.Index
 
 		// Write new hard state
 		if err := sl.StateLoader.SetHardState(ctx, writer, hs); err != nil {
@@ -3111,6 +3109,8 @@ func (r *Replica) recoverLogRaftMuLocked(
 		if err := writer.Commit(true); err != nil {
 			return err
 		}
+
+		log.Info(ctx, "Slow Path Completed")
 
 		break
 	}

@@ -8,7 +8,6 @@ package logstore
 
 import (
 	"context"
-	"fmt"
 	"math"
 	"math/rand"
 	"slices"
@@ -773,6 +772,11 @@ func LoadEntries(
 			continue
 		}
 
+		if kvpb.RaftIndex(ent.Index) != expectedIndex {
+			break
+		}
+		expectedIndex++
+
 		if sh.add(uint64(ent.Size())) {
 			ents = append(ents, ent)
 		}
@@ -784,6 +788,7 @@ func LoadEntries(
 
 	eCache.Add(rangeID, ents, false /* truncate */)
 
+	// TODO: move the compact check infront of this so that we do not get the case where we return because sh.done is true even though we actually compacted
 	// Did the correct number of results come back? If so, we're all good.
 	// Did we hit the size limits? If so, return what we have.
 	if len(ents) == int(hi-lo) || sh.done {
@@ -805,23 +810,23 @@ func LoadEntries(
 	// Even though metronome and the disk seemed to have the correct entries respectively
 	// Might be even a off by one error such as returning too many values etc however would
 	// need to confirm this if this happens frequently
-	fmt.Printf("flushed: [")
-	for _, ent := range flushedEntries {
-		fmt.Printf("%d, ", ent.Index)
-	}
-	fmt.Printf("]\n")
-
-	fmt.Printf("metronome: [")
-	for _, ent := range m.GetUnflushedEntries().entries {
-		fmt.Printf("%d, ", ent.Index)
-	}
-	fmt.Printf("]\n")
-
-	fmt.Printf("log: [")
-	for _, ent := range ents {
-		fmt.Printf("%d, ", ent.Index)
-	}
-	fmt.Printf("]\n")
+	// fmt.Printf("flushed: [")
+	// for _, ent := range flushedEntries {
+	// 	fmt.Printf("%d, ", ent.Index)
+	// }
+	// fmt.Printf("]\n")
+	//
+	// fmt.Printf("metronome: [")
+	// for _, ent := range m.GetUnflushedEntries().entries {
+	// 	fmt.Printf("%d, ", ent.Index)
+	// }
+	// fmt.Printf("]\n")
+	//
+	// fmt.Printf("log: [")
+	// for _, ent := range ents {
+	// 	fmt.Printf("%d, ", ent.Index)
+	// }
+	// fmt.Printf("]\n")
 	return nil, 0, 0, raft.ErrUnavailable
 }
 
