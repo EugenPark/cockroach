@@ -255,6 +255,8 @@ func TestTimeoutQueue(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
+	ctx := context.Background()
+
 	stopper := stop.NewStopper()
 	defer stopper.Stop(context.Background())
 	tq := newTimeoutQueue(stopper)
@@ -265,7 +267,7 @@ func TestTimeoutQueue(t *testing.T) {
 	}
 
 	// Test OnTimeout
-	tq.addTimeout(raftpb.Index(1), time.Duration(10)*time.Millisecond, changeVal)
+	tq.addTimeout(ctx, raftpb.Index(1), time.Duration(10)*time.Millisecond, changeVal)
 	time.Sleep(time.Duration(100) * time.Millisecond)
 
 	if val != 5 {
@@ -274,8 +276,8 @@ func TestTimeoutQueue(t *testing.T) {
 
 	val = 3
 	// Test cancellation
-	tq.addTimeout(raftpb.Index(2), time.Duration(10)*time.Millisecond, changeVal)
-	tq.cancelTimeout(raftpb.Index(2))
+	tq.addTimeout(ctx, raftpb.Index(2), time.Duration(10)*time.Millisecond, changeVal)
+	tq.cancelTimeout(ctx, raftpb.Index(2))
 	time.Sleep(time.Duration(100) * time.Millisecond)
 
 	if val != 3 {
@@ -389,5 +391,20 @@ func TestMergeRaftLogs(t *testing.T) {
 		if entry.Data[0] != expectedData[i] {
 			t.Fatalf("Log data mismatch at pos %d: got %d, expected %d", i, entry.Data[0], expectedData[i])
 		}
+	}
+}
+
+func TestClearLog(t *testing.T) {
+	ctx := context.Background()
+	stopper := stop.NewStopper()
+	defer stopper.Stop(ctx)
+	metronome := InitializeMetronome(1, stopper)
+
+	metronome.AppendEntries([]raftpb.Entry{{Index: 1}, {Index: 4}, {Index: 5}})
+	metronome.ClearEntries()
+
+	log := metronome.GetEntries(1, 5)
+	if len(log) != 0 {
+		t.Fatalf("Failed to clear the log: %#v\n", log)
 	}
 }

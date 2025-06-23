@@ -5377,11 +5377,14 @@ func TestProcessSplitAfterRightHandSideHasBeenRemoved(t *testing.T) {
 		) {
 			lisReg := listenerutil.NewListenerRegistry()
 			const numServers int = 3
+
 			stickyServerArgs := make(map[int]base.TestServerArgs)
 			for i := 0; i < numServers; i++ {
 				st := cluster.MakeTestingClusterSettings()
 				kvserver.OverrideDefaultLeaseType(ctx, &st.SV, leaseType)
 
+				listener := lisReg.MustGetOrCreate(t, i)
+				log.Infof(ctx, "ListenerRegistry: %#v\n", listener)
 				stickyServerArgs[i] = base.TestServerArgs{
 					Settings: st,
 					StoreSpecs: []base.StoreSpec{

@@ -98,7 +98,7 @@ func (sl StateLoader) LoadLastEntryID(
 	exists := false
 	var lastInMem raftpb.Entry
 	if metronome != nil {
-		lastInMem, exists = metronome.GetUnflushedEntries().GetLast()
+		lastInMem, exists = metronome.GetLastEntry()
 	}
 
 	if last.Index == 0 && !exists {
@@ -135,9 +135,10 @@ func (sl StateLoader) LoadRaftTruncatedState(
 func (sl StateLoader) SetRaftTruncatedState(
 	ctx context.Context, writer storage.Writer, truncState *kvserverpb.RaftTruncatedState,
 ) error {
-	if (*truncState == kvserverpb.RaftTruncatedState{}) {
-		return errors.New("cannot persist empty RaftTruncatedState")
-	}
+	// HACK: We allow ourselves to write empty truncated state
+	// if (*truncState == kvserverpb.RaftTruncatedState{}) {
+	// 	return errors.New("cannot persist empty RaftTruncatedState")
+	// }
 	// "Blind" because opts.Stats == nil and timestamp.IsEmpty().
 	return storage.MVCCBlindPutProto(
 		ctx,

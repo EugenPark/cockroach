@@ -239,6 +239,8 @@ func prepareRightReplicaForSplit(
 	}
 	// Finish initialization of the RHS replica.
 
+	log.Infof(ctx, "Banage: %#v", rightRepl.LogStorageRaftMuLocked())
+	log.Infof(ctx, "Banage2: %#v", r.LogStorageRaftMuLocked())
 	state, err := kvstorage.LoadReplicaState(
 		ctx, r.store.TODOEngine(), r.StoreID(), &split.RightDesc, rightRepl.replicaID, rightRepl.LogStorageRaftMuLocked().Metronome)
 	if err != nil {

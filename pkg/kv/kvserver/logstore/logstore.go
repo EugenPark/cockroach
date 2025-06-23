@@ -550,7 +550,7 @@ func Compact(
 		}
 	}
 
-	metronome.GetUnflushedEntries().Compact(uint64(next.Index))
+	metronome.CompactEntries(uint64(next.Index))
 
 	key := prefixBuf.RaftTruncatedStateKey()
 	var value roachpb.Value
@@ -614,7 +614,7 @@ func LoadTerm(
 		return kvpb.RaftTerm(entry.Term), nil
 	}
 
-	entry, found = metronome.GetUnflushedEntries().GetLast()
+	entry, found = metronome.GetLastEntry()
 	if found {
 		return kvpb.RaftTerm(entry.Term), nil
 	}
@@ -759,11 +759,11 @@ func LoadEntries(
 	}
 
 	raftLog.Add(flushedEntries)
-	raftLog.MergeRaftLogs(m.GetUnflushedEntries().GetLog(uint64(expectedIndex), uint64(hi)))
+	raftLog.MergeRaftLogs(m.GetEntries(uint64(expectedIndex), uint64(hi)))
 	newLog := raftLog.entries
 
 	// Entry is out of date discard it
-	if len(newLog) > 0 && len(ents) > 0 && ents[len(ents)-1].Index+1 != newLog[0].Index {
+	if len(newLog) > 0 && len(ents) > 0 && ents[len(ents)-1].Index+1 < newLog[0].Index {
 		ents = ents[:0]
 	}
 
@@ -806,27 +806,7 @@ func LoadEntries(
 
 	// We either have a gap in the log, or hi > LastIndex. Let the caller
 	// distinguish if they need to.
-	// TODO: Investigate: I once had a run where I failed to retrieve the entries
-	// Even though metronome and the disk seemed to have the correct entries respectively
-	// Might be even a off by one error such as returning too many values etc however would
-	// need to confirm this if this happens frequently
-	// fmt.Printf("flushed: [")
-	// for _, ent := range flushedEntries {
-	// 	fmt.Printf("%d, ", ent.Index)
-	// }
-	// fmt.Printf("]\n")
-	//
-	// fmt.Printf("metronome: [")
-	// for _, ent := range m.GetUnflushedEntries().entries {
-	// 	fmt.Printf("%d, ", ent.Index)
-	// }
-	// fmt.Printf("]\n")
-	//
-	// fmt.Printf("log: [")
-	// for _, ent := range ents {
-	// 	fmt.Printf("%d, ", ent.Index)
-	// }
-	// fmt.Printf("]\n")
+
 	return nil, 0, 0, raft.ErrUnavailable
 }
 

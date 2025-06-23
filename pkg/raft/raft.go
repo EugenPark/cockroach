@@ -433,6 +433,9 @@ type raft struct {
 	crdbVersion   clusterversion.Handle
 	metrics       *Metrics
 	testingKnobs  *TestingKnobs
+
+	// Have we requested a snapshot to catchup?
+	requestedSnapshot bool
 }
 
 func newRaft(c *Config) *raft {
@@ -520,6 +523,8 @@ func newRaft(c *Config) *raft {
 	// TODO(pav-kv): it should be ok to simply print %+v for lastID.
 	r.logger.Infof("newRaft %x [peers: [%s], term: %d, commit: %d, applied: %d, lastindex: %d, lastterm: %d]",
 		r.id, strings.Join(nodesStrs, ","), r.Term, r.raftLog.committed, r.raftLog.applied, lastID.index, lastID.term)
+
+	r.requestedSnapshot = false
 	return r
 }
 
@@ -2235,7 +2240,7 @@ func stepFollower(r *raft, m pb.Message) error {
 	case pb.MsgApp:
 		r.handleAppendEntries(m)
 	case pb.MsgHeartbeat:
-		r.handleHeartbeat(m)
+		r.handleHeartbeat(m.From)
 	case pb.MsgSnap:
 		r.handleSnapshot(m)
 	case pb.MsgFortifyLeader:
@@ -2333,7 +2338,9 @@ func leadSliceFromMsgApp(m *pb.Message) LeadSlice {
 }
 
 func (r *raft) handleAppendEntries(m pb.Message) {
-	r.checkMatch(m.Match)
+	if !r.checkMatch(&m) {
+		return
+	}
 
 	// TODO(pav-kv): construct LeadSlice up the stack next to receiving the
 	// message, and validate it before taking any action (e.g. bumping term).
@@ -2411,22 +2418,41 @@ func (r *raft) handleAppendEntries(m pb.Message) {
 }
 
 // checkMatch ensures that the follower's log size does not contradict to the
-// leader's idea where it matches.
-func (r *raft) checkMatch(match uint64) {
-	// TODO(pav-kv): lastIndex() might be not yet durable. Make this check
-	// stronger by comparing `match` with the last durable index.
-	//
-	// TODO(pav-kv): make this check stronger when the raftLog stores the last
-	// accepted term. If `match` is non-zero, this follower's log last accepted
-	// term must equal the leader term, and have entries up to `match` durable.
-	if last := r.raftLog.lastIndex(); last < match {
-		r.logger.Panicf("match(%d) is out of range [lastIndex(%d)]. Was the raft log corrupted, truncated, or lost?", match, last)
+// leader's idea where it matches. If the logs do not match but last index is 0
+// indicating it just restarted and requires a snapshot to catch up request a snapshot
+func (r *raft) checkMatch(m *pb.Message) bool {
+	// HACK: If the log is empty it means that we might have just restarted and need a snapshot to catch up
+	last := r.raftLog.lastIndex()
+	if last < m.Match {
+		if !r.requestedSnapshot {
+			r.send(pb.Message{
+				To:    m.From,
+				Type:  pb.MsgAppResp,
+				Index: m.Index,
+				// This helps the leader track the follower's commit index. This flow is
+				// independent from accepted/rejected log appends.
+				Commit:     r.raftLog.committed,
+				Reject:     true,
+				RejectHint: 0,
+				LogTerm:    0,
+			})
+
+			r.requestedSnapshot = true
+		}
+		// else {
+		// 	r.logger.Panicf("match(%d) is out of range [lastIndex(%d)]. Was the raft log corrupted, truncated, or lost?", m.Match, last)
+		// }
+		return false
 	}
+
+	return true
 }
 
-func (r *raft) handleHeartbeat(m pb.Message) {
-	r.checkMatch(m.Match)
-	r.send(pb.Message{To: m.From, Type: pb.MsgHeartbeatResp})
+func (r *raft) handleHeartbeat(from pb.PeerID) {
+	// if !r.checkMatch(m) {
+	// 	return
+	// }
+	r.send(pb.Message{To: from, Type: pb.MsgHeartbeatResp})
 }
 
 func (r *raft) handleSnapshot(m pb.Message) {
@@ -2447,6 +2473,8 @@ func (r *raft) handleSnapshot(m pb.Message) {
 	if r.restore(s) {
 		r.logger.Infof("%x [commit: %d] restored snapshot [index: %d, term: %d]",
 			r.id, r.raftLog.committed, id.index, id.term)
+
+		r.requestedSnapshot = false
 
 		// To send MsgAppResp to any leader, we must be sure that our log is
 		// consistent with that leader's log.

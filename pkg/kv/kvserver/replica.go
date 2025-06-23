@@ -35,7 +35,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/load"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/raftentry"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rafttrace"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rangefeed"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/split"
@@ -2933,27 +2932,23 @@ func (r *Replica) SendStreamStats(stats *rac2.RangeSendStreamStats) {
 }
 
 type recoveryResponse struct {
-	entries  []raftpb.Entry
-	snapshot *RecoverySnapshot
-	err      error
+	entries []raftpb.Entry
+	err     error
 }
 
 func (r *Replica) recoverLogRaftMuLocked(
 	ctx context.Context,
-	s *Store,
-	replicas []roachpb.ReplicaDescriptor,
-	sl stateloader.StateLoader,
-	sideload logstore.SideloadStorage,
-	eCache *raftentry.Cache,
-	rangeID roachpb.RangeID,
+	desc *roachpb.RangeDescriptor,
 ) error {
+	replicas := desc.Replicas().Descriptors()
 	// Immutable
 	if len(replicas) < 2 {
 		return nil
 	}
-	reader := s.TODOEngine().NewReader(storage.StandardDurability)
+	sideloaded := r.raftMu.sideloaded
+	reader := r.store.TODOEngine().NewReader(storage.StandardDurability)
 	defer reader.Close()
-	writer := s.TODOEngine().NewBatch()
+	writer := r.store.TODOEngine().NewBatch()
 	defer writer.Close()
 
 	// Mutable
@@ -2963,11 +2958,11 @@ func (r *Replica) recoverLogRaftMuLocked(
 
 	// Helpers
 	isOwnNode := func(replica roachpb.ReplicaDescriptor) bool {
-		return replica.NodeID == s.NodeID()
+		return replica.NodeID == r.NodeID()
 	}
 
 	// Fetch own log from disk
-	ownEntries, err := logstore.LoadDiskEntries(ctx, reader, sideload, eCache, rangeID, 0, math.MaxUint64-1)
+	ownEntries, err := logstore.LoadDiskEntries(ctx, reader, sideloaded, r.LogStorageRaftMuLocked().EntryCache, r.RangeID, 0, math.MaxUint64-1)
 	if err != nil {
 		return err
 	}
@@ -2989,7 +2984,7 @@ func (r *Replica) recoverLogRaftMuLocked(
 	// TODO: Add exclude entries as a param here
 	missingIndices := ls.Metronome.GetMissingIndices(lo, hi, flushedIndices)
 	if len(missingIndices) == 0 {
-		fmt.Printf("RangeID %d: no missing indices\n", r.RangeID)
+		// fmt.Printf("RangeID %d: no missing indices\n", r.RangeID)
 		return nil
 	}
 
@@ -3003,7 +2998,7 @@ func (r *Replica) recoverLogRaftMuLocked(
 		rep := replica // Deep copy works because all fields are values
 		inFlightRequests++
 		go func() {
-			resp, err := s.GetUntruncatedLogFromReplica(ctx, rep, rangeID, missingIndices)
+			resp, err := r.store.GetUntruncatedLogFromReplica(ctx, rep, r.RangeID, missingIndices)
 			if err != nil {
 				responses <- recoveryResponse{
 					err: err,
@@ -3011,7 +3006,7 @@ func (r *Replica) recoverLogRaftMuLocked(
 				return
 			}
 
-			responses <- recoveryResponse{entries: resp.Entries, snapshot: resp.RecoverySnap}
+			responses <- recoveryResponse{entries: resp.Entries}
 		}()
 	}
 
@@ -3021,7 +3016,6 @@ func (r *Replica) recoverLogRaftMuLocked(
 		return nil
 	}
 
-	raftLogPrefix := keys.RaftLogPrefix(rangeID)
 	for resp := range responses {
 
 		// Bookkeeping
@@ -3037,65 +3031,85 @@ func (r *Replica) recoverLogRaftMuLocked(
 		// Fast Path
 		// TODO: Sideload the entries perhaps?
 		entries := resp.entries
-		if len(entries) > 0 {
-			var newEntries []raftpb.Entry
-			for _, ent := range entries {
-				if index := slices.Index(missingIndices, ent.Index); index != -1 {
-					missingIndices = slices.Delete(missingIndices, index, index+1)
-					newEntries = append(newEntries, ent)
-				}
-			}
-			entries = newEntries
-
-			thinEntries, _, err := logstore.MaybeSideloadEntries(ctx, entries, sideload)
-			if err != nil {
-				return err
-			}
-
-			ls.Metronome.GetUnflushedEntries().Add(thinEntries)
+		if len(entries) == 0 {
 			continue
 		}
 
-		// Slow Path
-		log.Info(ctx, "Slow Path@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
-		if resp.snapshot == nil {
-			return nil
+		var newEntries []raftpb.Entry
+		for _, ent := range entries {
+			if index := slices.Index(missingIndices, ent.Index); index != -1 {
+				missingIndices = slices.Delete(missingIndices, index, index+1)
+				newEntries = append(newEntries, ent)
+			}
 		}
+		entries = newEntries
 
-		snap := resp.snapshot.Snapshot
-		state := resp.snapshot.ReplicaState
-
-		ts := &kvserverpb.RaftTruncatedState{
-			Index: kvpb.RaftIndex(snap.Metadata.Index),
-			Term:  kvpb.RaftTerm(snap.Metadata.Term),
-		}
-
-		// hs, err := sl.StateLoader.LoadHardState(ctx, reader)
-		// if err != nil {
-		// 	return err
-		// }
-		hs := raftpb.HardState{
-			Term:   snap.Metadata.Term,
-			Commit: snap.Metadata.Index,
-		}
-
-		// Write new hard state
-		if err := sl.StateLoader.SetHardState(ctx, writer, hs); err != nil {
+		thinEntries, _, err := logstore.MaybeSideloadEntries(ctx, entries, sideloaded)
+		if err != nil {
 			return err
 		}
+
+		ls.Metronome.AddRecoveredEntries(thinEntries)
+	}
+
+	if len(missingIndices) > 0 {
+		var index raftpb.Index
+		var term raftpb.Term
+		if len(ownEntries) > 0 {
+			index = raftpb.Index(ownEntries[0].Index)
+			term = raftpb.Term(ownEntries[0].Term)
+		} else {
+			index = 1
+			term = 1
+		}
+		sl := r.raftMu.stateLoader
+		raftLogPrefix := keys.RaftLogPrefix(r.RangeID)
+		// Write new hard state keep term and vote as they are required for recovery
+		hs, err := sl.LoadHardState(ctx, reader)
+		if err != nil {
+			return err
+		}
+
+		hs.Commit = uint64(index)
+
+		if err := sl.SetHardState(ctx, writer, hs); err != nil {
+			fmt.Printf("Failed to update hardstate\n")
+			return err
+		}
+
+		ts, err := sl.LoadRaftTruncatedState(ctx, reader)
+		if err != nil {
+			return err
+		}
+
+		ts.Index = index
+		ts.Term = term
 
 		// Write new truncated state
-		if err := sl.StateLoader.SetRaftTruncatedState(ctx, writer, ts); err != nil {
+		if err := sl.SetRaftTruncatedState(ctx, writer, &ts); err != nil {
+			fmt.Printf("Failed to update TruncatedState\n")
 			return err
 		}
 
-		// Write application state
+		state, err := sl.Load(ctx, reader, desc)
+		if err != nil {
+			return err
+		}
+
+		state.TruncatedState = &ts
+		state.RaftAppliedIndex = kvpb.RaftIndex(ownEntries[0].Index)
+		state.RaftAppliedIndexTerm = kvpb.RaftTerm(ownEntries[0].Index)
+
 		if _, err := sl.Save(ctx, writer, state); err != nil {
 			return err
 		}
 
 		// Clear log entries
-		for _, ent := range ownEntries {
+		for i, ent := range ownEntries {
+			if i == 0 {
+				// Dont clear the first log entry
+				continue
+			}
 			key := keys.RaftLogKeyFromPrefix(raftLogPrefix, kvpb.RaftIndex(ent.Index))
 			_, _, err := storage.MVCCDelete(ctx, writer, key, hlc.Timestamp{}, storage.MVCCWriteOptions{})
 			if err != nil {
@@ -3104,18 +3118,17 @@ func (r *Replica) recoverLogRaftMuLocked(
 		}
 
 		// Clear metronome
-		ls.Metronome.GetUnflushedEntries().Compact(snap.Metadata.Index)
+		ls.Metronome.ClearEntries()
 
 		if err := writer.Commit(true); err != nil {
 			return err
 		}
 
-		log.Info(ctx, "Slow Path Completed")
+		fmt.Printf("Cleared RangeID %d\n", r.RangeID)
 
-		break
+		// log.Fatalf(ctx, "Could not recover the log completely. Missing %#v", missingIndices)
+		// return ErrLogIsNotRecoverable
 	}
-
-	ls.Metronome.GetUnflushedEntries().Sort()
 
 	return nil
 }

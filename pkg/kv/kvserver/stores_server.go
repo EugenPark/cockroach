@@ -15,7 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
-	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"golang.org/x/exp/slices"
 )
 
@@ -86,22 +85,6 @@ func (is Server) GetUntruncatedLog(
 			}
 
 			repl.raftMu.AssertHeld()
-
-			// Snapshot
-			snapID := uuid.MakeV4()
-			snap, err := repl.GetSnapshot(ctx, snapID)
-
-			if err != nil {
-				return err
-			}
-			defer snap.Close()
-
-			if snap != nil {
-				resp.RecoverySnap = &RecoverySnapshot{
-					ReplicaState: snap.State,
-					Snapshot:     snap.RaftSnap,
-				}
-			}
 
 			// Missing entries
 			ents, err := logstore.LoadDiskEntries(ctx, reader, repl.raftMu.sideloaded, repl.raftMu.logStorage.EntryCache, rangeID, missingIndices[0], missingIndices[len(missingIndices)-1])

@@ -8,6 +8,7 @@ package kvserver
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -2321,7 +2322,15 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 
 		rep, err := newInitializedReplica(s, repl, true /* waitForPrevLeaseToExpire */)
 		if err != nil {
-			return err
+			if errors.Is(ErrLogIsNotRecoverable, err) {
+				fmt.Printf("Destroying range %d\n", rep.RangeID)
+				if err := rep.destroyRaftMuLocked(ctx, rep.replicaID+1); err != nil {
+					return err
+				}
+				continue
+			} else {
+				return err
+			}
 		}
 
 		// We can't lock s.mu across NewReplica due to the lock ordering
@@ -2448,23 +2457,66 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 func (s *Store) GetUntruncatedLogFromReplica(
 	ctx context.Context, replica roachpb.ReplicaDescriptor, rangeID roachpb.RangeID, missingIndices []uint64,
 ) (GetUntruncatedLogResponse, error) {
-	conn, err := s.cfg.NodeDialer.Dial(ctx, replica.NodeID, rpc.DefaultClass)
-	if err != nil {
-		return GetUntruncatedLogResponse{},
-			errors.Wrapf(err, "could not dial node ID %d", replica.NodeID)
+	var resp *GetUntruncatedLogResponse
+	var lastErr error
+
+	// Use exponential backoff with reasonable defaults.
+	const maxAttempts = 5
+	retryOpts := retry.Options{
+		InitialBackoff: 100 * time.Millisecond,
+		MaxBackoff:     1 * time.Second,
+		Multiplier:     2,
+		Closer:         s.stopper.ShouldQuiesce(),
 	}
-	client := NewPerReplicaClient(conn)
-	req := &GetUntruncatedLogRequest{
-		StoreRequestHeader: StoreRequestHeader{NodeID: replica.NodeID, StoreID: replica.StoreID},
-		RangeID:            rangeID,
-		MissingIndices:     missingIndices,
+
+	r := retry.StartWithCtx(ctx, retryOpts)
+	for attempts := 0; r.Next(); attempts++ {
+		conn, err := s.cfg.NodeDialer.Dial(ctx, replica.NodeID, rpc.DefaultClass)
+		if err != nil {
+			lastErr = errors.Wrapf(err, "could not dial node ID %d", replica.NodeID)
+			continue // retry on dial error
+		}
+
+		client := NewPerReplicaClient(conn)
+		req := &GetUntruncatedLogRequest{
+			StoreRequestHeader: StoreRequestHeader{NodeID: replica.NodeID, StoreID: replica.StoreID},
+			RangeID:            rangeID,
+			MissingIndices:     missingIndices,
+		}
+		resp, err = client.GetUntruncatedLog(ctx, req)
+		if err != nil {
+			lastErr = err
+			continue // retry on RPC error
+		}
+		return *resp, nil // success
 	}
-	resp, err := client.GetUntruncatedLog(ctx, req)
-	if err != nil {
-		return GetUntruncatedLogResponse{}, err
-	}
-	return *resp, nil
+
+	// Retry exhausted
+	return GetUntruncatedLogResponse{}, errors.Wrapf(lastErr,
+		"GetUntruncatedLogFromReplica: failed after retries for node %d", replica.NodeID)
 }
+
+//
+// func (s *Store) GetUntruncatedLogFromReplica(
+// 	ctx context.Context, replica roachpb.ReplicaDescriptor, rangeID roachpb.RangeID, missingIndices []uint64,
+// ) (GetUntruncatedLogResponse, error) {
+// 	conn, err := s.cfg.NodeDialer.Dial(ctx, replica.NodeID, rpc.DefaultClass)
+// 	if err != nil {
+// 		return GetUntruncatedLogResponse{},
+// 			errors.Wrapf(err, "could not dial node ID %d", replica.NodeID)
+// 	}
+// 	client := NewPerReplicaClient(conn)
+// 	req := &GetUntruncatedLogRequest{
+// 		StoreRequestHeader: StoreRequestHeader{NodeID: replica.NodeID, StoreID: replica.StoreID},
+// 		RangeID:            rangeID,
+// 		MissingIndices:     missingIndices,
+// 	}
+// 	resp, err := client.GetUntruncatedLog(ctx, req)
+// 	if err != nil {
+// 		return GetUntruncatedLogResponse{}, err
+// 	}
+// 	return *resp, nil
+// }
 
 // WaitForInit waits for any asynchronous processes begun in Start()
 // to complete their initialization. In particular, this includes

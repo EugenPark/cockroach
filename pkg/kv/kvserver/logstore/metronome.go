@@ -224,10 +224,6 @@ func InitializeMetronome(replicaID roachpb.ReplicaID, stopper *stop.Stopper) *Me
 	return &m
 }
 
-func (m *Metronome) GetUnflushedEntries() *RaftLogMap {
-	return &m.unflushedEntries
-}
-
 func (m *Metronome) SetSchemes(schemes [][]roachpb.ReplicaID) {
 	m.schemes = schemes
 }
@@ -237,7 +233,6 @@ func (m *Metronome) GetSchemes() [][]roachpb.ReplicaID {
 }
 
 func (m *Metronome) Commit(ctx context.Context, toApply []raftpb.Entry) {
-	// log.Info(ctx, "Committing")
 	if m == nil {
 		return
 	}
@@ -329,6 +324,8 @@ func (m *Metronome) FilterEntries(ctx context.Context, entries []raftpb.Entry, c
 	filteredEntries := make([]raftpb.Entry, 0, len(entries))
 	lastEntry := entries[len(entries)-1]
 
+	m.unflushedEntries.Lock()
+	defer m.unflushedEntries.Unlock()
 	for _, ent := range entries {
 		shouldFlush := m.shouldFlush(ent.Index)
 
@@ -346,11 +343,56 @@ func (m *Metronome) FilterEntries(ctx context.Context, entries []raftpb.Entry, c
 		}
 	}
 
-	m.unflushedEntries.Lock()
-	defer m.unflushedEntries.Unlock()
 	m.unflushedEntries.Add(filteredEntries)
 
 	return unfilteredEntries, lastEntry
+}
+
+func (m *Metronome) GetLastEntry() (raftpb.Entry, bool) {
+	m.unflushedEntries.Lock()
+	defer m.unflushedEntries.Unlock()
+
+	return m.unflushedEntries.GetLast()
+}
+
+func (m *Metronome) AppendEntries(entries []raftpb.Entry) {
+	m.unflushedEntries.Lock()
+	defer m.unflushedEntries.Unlock()
+
+	m.unflushedEntries.Add(entries)
+}
+
+func (m *Metronome) AddRecoveredEntries(entries []raftpb.Entry) {
+	m.unflushedEntries.Lock()
+	defer m.unflushedEntries.Unlock()
+
+	m.unflushedEntries.Add(entries)
+	m.unflushedEntries.Sort()
+}
+
+func (m *Metronome) CompactEntries(index uint64) {
+	m.unflushedEntries.Lock()
+	defer m.unflushedEntries.Unlock()
+
+	m.unflushedEntries.Compact(index)
+}
+
+func (m *Metronome) GetEntries(lo, hi uint64) []raftpb.Entry {
+	m.unflushedEntries.Lock()
+	defer m.unflushedEntries.Unlock()
+
+	log := m.unflushedEntries.GetLog(lo, hi)
+	copied := make([]raftpb.Entry, len(log))
+	copy(copied, log)
+
+	return copied
+}
+
+func (m *Metronome) ClearEntries() {
+	m.unflushedEntries.Lock()
+	defer m.unflushedEntries.Unlock()
+
+	m.unflushedEntries.entries = make([]raftpb.Entry, 0)
 }
 
 func (m *Metronome) shouldFlush(raftIndex uint64) bool {

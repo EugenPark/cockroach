@@ -148,7 +148,7 @@ func TestLoadLastEntryID(t *testing.T) {
 		Term:  105,
 	}, lastEntryID)
 
-	metronome.GetUnflushedEntries().Add([]raftpb.Entry{{
+	metronome.AppendEntries([]raftpb.Entry{{
 		Term:  106,
 		Index: 6,
 	}})

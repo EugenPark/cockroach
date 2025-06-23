@@ -46,6 +46,8 @@ const (
 	mergeQueueThrottleDuration = 5 * time.Second
 )
 
+var ErrLogIsNotRecoverable = errors.New("Log could not be recovered")
+
 // defRaftConnClass is the default rpc.ConnectionClass used for non-system raft
 // traffic. Normally it is RaftClass, but can be flipped to DefaultClass if the
 // corresponding env variable is true.
@@ -106,7 +108,7 @@ func newInitializedReplica(
 	ctx := context.Background()
 	ls := r.LogStorageRaftMuLocked()
 	ls.Metronome.SetSchemes(repl.Desc.GetAllQuorums())
-	if err := r.recoverLogRaftMuLocked(ctx, store, repl.Desc.Replicas().Descriptors(), r.mu.stateLoader, r.raftMu.sideloaded, ls.EntryCache, repl.RangeID); err != nil {
+	if err := r.recoverLogRaftMuLocked(ctx, repl.Desc); err != nil {
 		return nil, err
 	}
 

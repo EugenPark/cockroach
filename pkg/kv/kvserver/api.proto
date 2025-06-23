@@ -148,13 +148,6 @@ message GetUntruncatedLogRequest {
   repeated uint64 missing_indices = 3;
 }
 
-message RecoverySnapshot {
-  cockroach.kv.kvserver.storagepb.ReplicaState replicaState = 1
-      [ (gogoproto.nullable) = false ];
-  raftpb.Snapshot snapshot = 2 [ (gogoproto.nullable) = false ];
-}
-
 message GetUntruncatedLogResponse {
   repeated raftpb.Entry entries = 1 [ (gogoproto.nullable) = false ];
-  RecoverySnapshot recovery_snap = 2;
 }
