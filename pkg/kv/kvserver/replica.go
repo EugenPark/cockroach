@@ -2939,11 +2939,11 @@ type recoveryResponse struct {
 func (r *Replica) recoverLogRaftMuLocked(
 	ctx context.Context,
 	desc *roachpb.RangeDescriptor,
-) error {
+) (uint64, error) {
 	replicas := desc.Replicas().Descriptors()
 	// Immutable
 	if len(replicas) < 2 {
-		return nil
+		return 0, nil
 	}
 	sideloaded := r.raftMu.sideloaded
 	reader := r.store.TODOEngine().NewReader(storage.StandardDurability)
@@ -2964,7 +2964,7 @@ func (r *Replica) recoverLogRaftMuLocked(
 	// Fetch own log from disk
 	ownEntries, err := logstore.LoadDiskEntries(ctx, reader, sideloaded, r.LogStorageRaftMuLocked().EntryCache, r.RangeID, 0, math.MaxUint64-1)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	var lo, hi uint64
@@ -2981,11 +2981,9 @@ func (r *Replica) recoverLogRaftMuLocked(
 		flushedIndices = append(flushedIndices, ent.Index)
 	}
 
-	// TODO: Add exclude entries as a param here
 	missingIndices := ls.Metronome.GetMissingIndices(lo, hi, flushedIndices)
 	if len(missingIndices) == 0 {
-		// fmt.Printf("RangeID %d: no missing indices\n", r.RangeID)
-		return nil
+		return 0, nil
 	}
 
 	// Query other nodes for log entries
@@ -3012,8 +3010,7 @@ func (r *Replica) recoverLogRaftMuLocked(
 
 	if inFlightRequests == 0 {
 		// We do not expect any answers so there is nothing to recover from
-		// fmt.Println("Recover Log Done no requests")
-		return nil
+		return 0, nil
 	}
 
 	for resp := range responses {
@@ -3025,7 +3022,7 @@ func (r *Replica) recoverLogRaftMuLocked(
 		}
 
 		if resp.err != nil {
-			return resp.err
+			return 0, resp.err
 		}
 
 		// Fast Path
@@ -3046,89 +3043,16 @@ func (r *Replica) recoverLogRaftMuLocked(
 
 		thinEntries, _, err := logstore.MaybeSideloadEntries(ctx, entries, sideloaded)
 		if err != nil {
-			return err
+			return 0, err
 		}
 
 		ls.Metronome.AddRecoveredEntries(thinEntries)
 	}
 
 	if len(missingIndices) > 0 {
-		var index raftpb.Index
-		var term raftpb.Term
-		if len(ownEntries) > 0 {
-			index = raftpb.Index(ownEntries[0].Index)
-			term = raftpb.Term(ownEntries[0].Term)
-		} else {
-			index = 1
-			term = 1
-		}
-		sl := r.raftMu.stateLoader
-		raftLogPrefix := keys.RaftLogPrefix(r.RangeID)
-		// Write new hard state keep term and vote as they are required for recovery
-		hs, err := sl.LoadHardState(ctx, reader)
-		if err != nil {
-			return err
-		}
-
-		hs.Commit = uint64(index)
-
-		if err := sl.SetHardState(ctx, writer, hs); err != nil {
-			fmt.Printf("Failed to update hardstate\n")
-			return err
-		}
-
-		ts, err := sl.LoadRaftTruncatedState(ctx, reader)
-		if err != nil {
-			return err
-		}
-
-		ts.Index = index
-		ts.Term = term
-
-		// Write new truncated state
-		if err := sl.SetRaftTruncatedState(ctx, writer, &ts); err != nil {
-			fmt.Printf("Failed to update TruncatedState\n")
-			return err
-		}
-
-		state, err := sl.Load(ctx, reader, desc)
-		if err != nil {
-			return err
-		}
-
-		state.TruncatedState = &ts
-		state.RaftAppliedIndex = kvpb.RaftIndex(ownEntries[0].Index)
-		state.RaftAppliedIndexTerm = kvpb.RaftTerm(ownEntries[0].Index)
-
-		if _, err := sl.Save(ctx, writer, state); err != nil {
-			return err
-		}
-
-		// Clear log entries
-		for i, ent := range ownEntries {
-			if i == 0 {
-				// Dont clear the first log entry
-				continue
-			}
-			key := keys.RaftLogKeyFromPrefix(raftLogPrefix, kvpb.RaftIndex(ent.Index))
-			_, _, err := storage.MVCCDelete(ctx, writer, key, hlc.Timestamp{}, storage.MVCCWriteOptions{})
-			if err != nil {
-				return err
-			}
-		}
-
-		// Clear metronome
-		ls.Metronome.ClearEntries()
-
-		if err := writer.Commit(true); err != nil {
-			return err
-		}
-
-		fmt.Printf("Cleared RangeID %d\n", r.RangeID)
-
-		// log.Fatalf(ctx, "Could not recover the log completely. Missing %#v", missingIndices)
-		// return ErrLogIsNotRecoverable
+		log.Warningf(ctx, "Could not recover the log completely. Missing %#v", missingIndices)
+		return missingIndices[0], ErrLogIsNotRecoverable
 	}
 
-	return nil
+	return 0, nil
 }

@@ -95,6 +95,7 @@ func TestIsLocalMsg(t *testing.T) {
 		{pb.MsgFortifyLeader, false},
 		{pb.MsgFortifyLeaderResp, false},
 		{pb.MsgDeFortifyLeader, false},
+		{pb.MsgRecover, true},
 	}
 
 	for _, tt := range tests {
@@ -129,6 +130,7 @@ func TestIsResponseMsg(t *testing.T) {
 		{pb.MsgFortifyLeader, false},
 		{pb.MsgFortifyLeaderResp, true},
 		{pb.MsgDeFortifyLeader, false},
+		{pb.MsgRecoverResp, true},
 	}
 
 	for i, tt := range tests {

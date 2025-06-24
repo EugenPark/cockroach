@@ -85,7 +85,7 @@ func loadInitializedReplicaForTesting(
 
 	// No need to wait for previous lease to expire since this is only used in
 	// tests and some tests don't expect the extra delay.
-	if err := r.initRaftMuLockedReplicaMuLocked(state, false); err != nil {
+	if err := r.initRaftMuLockedReplicaMuLocked(state, false, 0); err != nil {
 		return nil, err
 	}
 
@@ -108,7 +108,9 @@ func newInitializedReplica(
 	ctx := context.Background()
 	ls := r.LogStorageRaftMuLocked()
 	ls.Metronome.SetSchemes(repl.Desc.GetAllQuorums())
-	if err := r.recoverLogRaftMuLocked(ctx, repl.Desc); err != nil {
+
+	missingIndex, err := r.recoverLogRaftMuLocked(ctx, repl.Desc)
+	if err != nil && !errors.Is(ErrLogIsNotRecoverable, err) {
 		return nil, err
 	}
 
@@ -117,7 +119,7 @@ func newInitializedReplica(
 		return nil, err
 	}
 
-	if err := r.initRaftMuLockedReplicaMuLocked(loaded, waitForPrevLeaseToExpire); err != nil {
+	if err := r.initRaftMuLockedReplicaMuLocked(loaded, waitForPrevLeaseToExpire, missingIndex); err != nil {
 		return nil, err
 	}
 
@@ -139,7 +141,7 @@ func newUninitializedReplica(
 	defer r.raftMu.Unlock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if err := r.initRaftGroupRaftMuLockedReplicaMuLocked(); err != nil {
+	if err := r.initRaftGroupRaftMuLockedReplicaMuLocked(0); err != nil {
 		return nil, err
 	}
 	return r, nil
@@ -328,7 +330,7 @@ func (r *Replica) setStartKeyLocked(startKey roachpb.RKey) {
 // initRaftMuLockedReplicaMuLocked initializes the Replica using the state
 // loaded from storage. Must not be called more than once on a Replica.
 func (r *Replica) initRaftMuLockedReplicaMuLocked(
-	s kvstorage.LoadedReplicaState, waitForPrevLeaseToExpire bool,
+	s kvstorage.LoadedReplicaState, waitForPrevLeaseToExpire bool, missingIndex uint64,
 ) error {
 	desc := s.ReplState.Desc
 	// Ensure that the loaded state corresponds to the same replica.
@@ -358,7 +360,7 @@ func (r *Replica) initRaftMuLockedReplicaMuLocked(
 	//
 	// We do this before the call to setDescLockedRaftMuLocked(), since it flips
 	// isInitialized and we'd like the Raft group to be in place before then.
-	if err := r.initRaftGroupRaftMuLockedReplicaMuLocked(); err != nil {
+	if err := r.initRaftGroupRaftMuLockedReplicaMuLocked(missingIndex); err != nil {
 		return err
 	}
 
@@ -396,7 +398,7 @@ func (r *Replica) initRaftMuLockedReplicaMuLocked(
 
 // initRaftGroupRaftMuLockedReplicaMuLocked initializes a Raft group for the
 // replica, replacing the existing Raft group if any.
-func (r *Replica) initRaftGroupRaftMuLockedReplicaMuLocked() error {
+func (r *Replica) initRaftGroupRaftMuLockedReplicaMuLocked(missingIndex uint64) error {
 	ctx := r.AnnotateCtx(context.Background())
 	rg, err := raft.NewRawNode(newRaftConfig(
 		ctx,
@@ -409,6 +411,7 @@ func (r *Replica) initRaftGroupRaftMuLockedReplicaMuLocked() error {
 		(*replicaRLockedStoreLiveness)(r),
 		r.store.raftMetrics,
 		r.store.TestingKnobs().RaftTestingKnobs,
+		missingIndex,
 	))
 	if err != nil {
 		return err

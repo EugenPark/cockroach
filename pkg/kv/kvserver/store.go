@@ -403,6 +403,7 @@ func newRaftConfig(
 	storeLiveness raftstoreliveness.StoreLiveness,
 	metrics *raft.Metrics,
 	testingKnobs *raft.TestingKnobs,
+	missingIndex uint64,
 ) *raft.Config {
 	return &raft.Config{
 		ID:                          id,
@@ -425,6 +426,7 @@ func newRaftConfig(
 		CRDBVersion:                 storeCfg.Settings.Version,
 		Metrics:                     metrics,
 		TestingKnobs:                testingKnobs,
+		MissingIndex:                raftpb.Index(missingIndex),
 	}
 }
 

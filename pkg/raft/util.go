@@ -31,6 +31,7 @@ var isLocalMsg = [...]bool{
 	pb.MsgBeat:        true,
 	pb.MsgUnreachable: true,
 	pb.MsgSnapStatus:  true,
+	pb.MsgRecover:     true,
 }
 
 var isResponseMsg = [...]bool{
@@ -40,6 +41,7 @@ var isResponseMsg = [...]bool{
 	pb.MsgUnreachable:       true,
 	pb.MsgPreVoteResp:       true,
 	pb.MsgFortifyLeaderResp: true,
+	pb.MsgRecoverResp:       true,
 }
 
 // isMsgFromLeader contains message types that come from the leader of the
