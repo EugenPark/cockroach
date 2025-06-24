@@ -8,6 +8,7 @@ package logstore
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"math/rand"
 	"slices"
@@ -759,23 +760,15 @@ func LoadEntries(
 	}
 
 	raftLog.Add(flushedEntries)
-	raftLog.MergeRaftLogs(m.GetEntries(uint64(expectedIndex), uint64(hi)))
-	newLog := raftLog.entries
+	metronomeEntries := m.GetEntries(uint64(expectedIndex), uint64(hi))
 
-	// Entry is out of date discard it
-	if len(newLog) > 0 && len(ents) > 0 && ents[len(ents)-1].Index+1 < newLog[0].Index {
-		ents = ents[:0]
-	}
+	raftLog.MergeRaftLogs(metronomeEntries)
+	newLog := raftLog.GetLog(uint64(lo), uint64(hi))
 
 	for _, ent := range newLog {
-		if len(ents) > 0 && ents[len(ents)-1].Index == ent.Index && ents[len(ents)-1].Term == ent.Term {
-			continue
-		}
-
 		if kvpb.RaftIndex(ent.Index) != expectedIndex {
 			break
 		}
-		expectedIndex++
 
 		if sh.add(uint64(ent.Size())) {
 			ents = append(ents, ent)
@@ -784,6 +777,8 @@ func LoadEntries(
 		if sh.done {
 			break
 		}
+
+		expectedIndex++
 	}
 
 	eCache.Add(rangeID, ents, false /* truncate */)
@@ -806,6 +801,29 @@ func LoadEntries(
 
 	// We either have a gap in the log, or hi > LastIndex. Let the caller
 	// distinguish if they need to.
+	fmt.Printf("Entries %d, %d, %d: [", lo, expectedIndex, hi)
+	for _, ent := range ents {
+		fmt.Printf("%d, ", ent.Index)
+	}
+	fmt.Printf("]\n")
+
+	fmt.Printf("Metronome: [")
+	for _, ent := range metronomeEntries {
+		fmt.Printf("%d, ", ent.Index)
+	}
+	fmt.Printf("]\n")
+
+	fmt.Printf("Flushed: [")
+	for _, ent := range flushedEntries {
+		fmt.Printf("%d, ", ent.Index)
+	}
+	fmt.Printf("]\n")
+
+	fmt.Printf("NewLog: [")
+	for _, ent := range newLog {
+		fmt.Printf("%d, ", ent.Index)
+	}
+	fmt.Printf("]\n")
 
 	return nil, 0, 0, raft.ErrUnavailable
 }
