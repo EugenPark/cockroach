@@ -1,44 +1,40 @@
 syntax = "proto2";
 package raftpb;
-option go_package = "github.com/cockroachdb/cockroach/pkg/raft/raftpb";
 
 import "gogoproto/gogo.proto";
 
+option go_package = "github.com/cockroachdb/cockroach/pkg/raft/raftpb";
+option (gogoproto.goproto_enum_prefix_all) = false;
+option (gogoproto.goproto_getters_all) = false;
+option (gogoproto.goproto_sizecache_all) = false;
+option (gogoproto.goproto_unkeyed_all) = false;
+option (gogoproto.goproto_unrecognized_all) = false;
 option (gogoproto.marshaler_all) = true;
 option (gogoproto.sizer_all) = true;
 option (gogoproto.unmarshaler_all) = true;
-option (gogoproto.goproto_getters_all) = false;
-option (gogoproto.goproto_enum_prefix_all) = false;
-option (gogoproto.goproto_unkeyed_all) = false;
-option (gogoproto.goproto_unrecognized_all) = false;
-option (gogoproto.goproto_sizecache_all) = false;
 
 enum EntryType {
   EntryNormal = 0;
-  EntryConfChange = 1;   // corresponds to pb.ConfChange
+  EntryConfChange = 1; // corresponds to pb.ConfChange
   EntryConfChangeV2 = 2; // corresponds to pb.ConfChangeV2
 }
 
 message Entry {
-  optional uint64 Term = 2
-      [ (gogoproto.nullable) =
-            false ]; // must be 64-bit aligned for atomic operations
-  optional uint64 Index = 3
-      [ (gogoproto.nullable) =
-            false ]; // must be 64-bit aligned for atomic operations
-  optional EntryType Type = 1 [ (gogoproto.nullable) = false ];
+  optional uint64 Term = 2 [(gogoproto.nullable) = false]; // must be 64-bit aligned for atomic operations
+  optional uint64 Index = 3 [(gogoproto.nullable) = false]; // must be 64-bit aligned for atomic operations
+  optional EntryType Type = 1 [(gogoproto.nullable) = false];
   optional bytes Data = 4;
 }
 
 message SnapshotMetadata {
-  optional ConfState conf_state = 1 [ (gogoproto.nullable) = false ];
-  optional uint64 index = 2 [ (gogoproto.nullable) = false ];
-  optional uint64 term = 3 [ (gogoproto.nullable) = false ];
+  optional ConfState conf_state = 1 [(gogoproto.nullable) = false];
+  optional uint64 index = 2 [(gogoproto.nullable) = false];
+  optional uint64 term = 3 [(gogoproto.nullable) = false];
 }
 
 message Snapshot {
   optional bytes data = 1;
-  optional SnapshotMetadata metadata = 2 [ (gogoproto.nullable) = false ];
+  optional SnapshotMetadata metadata = 2 [(gogoproto.nullable) = false];
 }
 
 // For description of different message types, see:
@@ -74,12 +70,16 @@ enum MessageType {
 }
 
 message Message {
-  optional MessageType type = 1 [ (gogoproto.nullable) = false ];
-  optional uint64 to = 2
-      [ (gogoproto.nullable) = false, (gogoproto.casttype) = "PeerID" ];
-  optional uint64 from = 3
-      [ (gogoproto.nullable) = false, (gogoproto.casttype) = "PeerID" ];
-  optional uint64 term = 4 [ (gogoproto.nullable) = false ];
+  optional MessageType type = 1 [(gogoproto.nullable) = false];
+  optional uint64 to = 2 [
+    (gogoproto.nullable) = false,
+    (gogoproto.casttype) = "PeerID"
+  ];
+  optional uint64 from = 3 [
+    (gogoproto.nullable) = false,
+    (gogoproto.casttype) = "PeerID"
+  ];
+  optional uint64 term = 4 [(gogoproto.nullable) = false];
   // logTerm is generally used for appending Raft logs to followers. For
   // example, (type=MsgApp,index=100,logTerm=5) means the leader appends entries
   // starting at index=101, and the term of the entry at index 100 is 5.
@@ -91,20 +91,22 @@ message Message {
   // MsgStorageAppend message was the one that carried these entries, just that
   // those entries were stable at the time of processing the corresponding
   // MsgStorageAppend.
-  optional uint64 logTerm = 5 [ (gogoproto.nullable) = false ];
-  optional uint64 index = 6 [ (gogoproto.nullable) = false ];
-  repeated Entry entries = 7 [ (gogoproto.nullable) = false ];
-  optional uint64 commit = 8 [ (gogoproto.nullable) = false ];
-  optional uint64 leadEpoch = 17
-      [ (gogoproto.nullable) = false, (gogoproto.casttype) = "Epoch" ];
+  optional uint64 logTerm = 5 [(gogoproto.nullable) = false];
+  optional uint64 index = 6 [(gogoproto.nullable) = false];
+  repeated Entry entries = 7 [(gogoproto.nullable) = false];
+  optional uint64 commit = 8 [(gogoproto.nullable) = false];
+  optional uint64 leadEpoch = 17 [
+    (gogoproto.nullable) = false,
+    (gogoproto.casttype) = "Epoch"
+  ];
   // snapshot is non-nil and non-empty for MsgSnap messages and nil for all
   // other message types. However, peer nodes running older binary versions may
   // send a non-nil, empty value for the snapshot field of non-MsgSnap messages.
   // Code should be prepared to handle such messages.
-  optional Snapshot snapshot = 9 [ (gogoproto.nullable) = true ];
-  optional bool reject = 10 [ (gogoproto.nullable) = false ];
-  optional uint64 rejectHint = 11 [ (gogoproto.nullable) = false ];
-  optional bytes context = 12 [ (gogoproto.nullable) = true ];
+  optional Snapshot snapshot = 9 [(gogoproto.nullable) = true];
+  optional bool reject = 10 [(gogoproto.nullable) = false];
+  optional uint64 rejectHint = 11 [(gogoproto.nullable) = false];
+  optional bytes context = 12 [(gogoproto.nullable) = true];
 
   // match is the log index up to which the follower's log must persistently
   // match the leader's. If the follower's persistent log is shorter, it means
@@ -119,20 +121,26 @@ message Message {
   // match is only populated by the leader when sending messages to a voting
   // follower. This can be 0 if the leader hasn't yet established the follower's
   // match index, or for backward compatibility.
-  optional uint64 match = 15 [ (gogoproto.nullable) = false ];
+  optional uint64 match = 15 [(gogoproto.nullable) = false];
 
   reserved 13, 14, 16;
 }
 
 message HardState {
-  optional uint64 term = 1 [ (gogoproto.nullable) = false ];
-  optional uint64 vote = 2
-      [ (gogoproto.nullable) = false, (gogoproto.casttype) = "PeerID" ];
-  optional uint64 commit = 3 [ (gogoproto.nullable) = false ];
-  optional uint64 lead = 4
-      [ (gogoproto.nullable) = false, (gogoproto.casttype) = "PeerID" ];
-  optional uint64 lead_epoch = 5
-      [ (gogoproto.nullable) = false, (gogoproto.casttype) = "Epoch" ];
+  optional uint64 term = 1 [(gogoproto.nullable) = false];
+  optional uint64 vote = 2 [
+    (gogoproto.nullable) = false,
+    (gogoproto.casttype) = "PeerID"
+  ];
+  optional uint64 commit = 3 [(gogoproto.nullable) = false];
+  optional uint64 lead = 4 [
+    (gogoproto.nullable) = false,
+    (gogoproto.casttype) = "PeerID"
+  ];
+  optional uint64 lead_epoch = 5 [
+    (gogoproto.nullable) = false,
+    (gogoproto.casttype) = "Epoch"
+  ];
 }
 
 // ConfChangeTransition specifies the behavior of a configuration change with
@@ -158,18 +166,18 @@ enum ConfChangeTransition {
 message ConfState {
   // The voters in the incoming config. (If the configuration is not joint,
   // then the outgoing config is empty).
-  repeated uint64 voters = 1 [ (gogoproto.casttype) = "PeerID" ];
+  repeated uint64 voters = 1 [(gogoproto.casttype) = "PeerID"];
   // The learners in the incoming config.
-  repeated uint64 learners = 2 [ (gogoproto.casttype) = "PeerID" ];
+  repeated uint64 learners = 2 [(gogoproto.casttype) = "PeerID"];
   // The voters in the outgoing config.
-  repeated uint64 voters_outgoing = 3 [ (gogoproto.casttype) = "PeerID" ];
+  repeated uint64 voters_outgoing = 3 [(gogoproto.casttype) = "PeerID"];
   // The peers that will become learners when the outgoing config is removed.
   // These peers are necessarily currently in voters (or they would have been
   // added to the incoming config right away).
-  repeated uint64 learners_next = 4 [ (gogoproto.casttype) = "PeerID" ];
+  repeated uint64 learners_next = 4 [(gogoproto.casttype) = "PeerID"];
   // If set, the config is joint and Raft will automatically transition into
   // the final config (i.e. remove the outgoing config) when this is safe.
-  optional bool auto_leave = 5 [ (gogoproto.nullable) = false ];
+  optional bool auto_leave = 5 [(gogoproto.nullable) = false];
 }
 
 // TODO(arul): In the future, consider renaming all of these to be suffixed with
@@ -182,7 +190,7 @@ enum ConfChangeType {
 }
 
 message ConfChange {
-  optional ConfChangeType type = 2 [ (gogoproto.nullable) = false ];
+  optional ConfChangeType type = 2 [(gogoproto.nullable) = false];
   optional uint64 node_id = 3 [
     (gogoproto.nullable) = false,
     (gogoproto.customname) = "NodeID",
@@ -193,14 +201,16 @@ message ConfChange {
   // NB: this is used only by etcd to thread through a unique identifier.
   // Ideally it should really use the Context instead. No counterpart to
   // this field exists in ConfChangeV2.
-  optional uint64 id = 1
-      [ (gogoproto.nullable) = false, (gogoproto.customname) = "ID" ];
+  optional uint64 id = 1 [
+    (gogoproto.nullable) = false,
+    (gogoproto.customname) = "ID"
+  ];
 }
 
 // ConfChangeSingle is an individual configuration change operation. Multiple
 // such operations can be carried out atomically via a ConfChangeV2.
 message ConfChangeSingle {
-  optional ConfChangeType type = 1 [ (gogoproto.nullable) = false ];
+  optional ConfChangeType type = 1 [(gogoproto.nullable) = false];
   optional uint64 node_id = 2 [
     (gogoproto.nullable) = false,
     (gogoproto.customname) = "NodeID",
@@ -241,7 +251,7 @@ message ConfChangeSingle {
 //
 // [1]: https://github.com/ongardie/dissertation/blob/master/online-trim.pdf
 message ConfChangeV2 {
-  optional ConfChangeTransition transition = 1 [ (gogoproto.nullable) = false ];
-  repeated ConfChangeSingle changes = 2 [ (gogoproto.nullable) = false ];
+  optional ConfChangeTransition transition = 1 [(gogoproto.nullable) = false];
+  repeated ConfChangeSingle changes = 2 [(gogoproto.nullable) = false];
   optional bytes context = 3;
 }

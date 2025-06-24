@@ -449,7 +449,6 @@ func (t *raftLogTruncator) durabilityAdvanced(ctx context.Context) {
 	defer reader.Close()
 	shouldQuiesce := t.stopper.ShouldQuiesce()
 	quiesced := false
-	// HACK: Disable Truncations
 	for _, rangeID := range ranges {
 		t.tryEnactTruncations(ctx, rangeID, reader)
 		// Check if the stopper is quiescing. This isn't strictly necessary, but

@@ -2309,7 +2309,6 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 		return err
 	}
 	logEvery := log.Every(10 * time.Second)
-
 	for i, repl := range repls {
 		// Log progress regularly, but not for the first replica (we only want to
 		// log when this is slow). The last replica is logged after iteration.

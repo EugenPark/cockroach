@@ -135,10 +135,9 @@ func (sl StateLoader) LoadRaftTruncatedState(
 func (sl StateLoader) SetRaftTruncatedState(
 	ctx context.Context, writer storage.Writer, truncState *kvserverpb.RaftTruncatedState,
 ) error {
-	// HACK: We allow ourselves to write empty truncated state
-	// if (*truncState == kvserverpb.RaftTruncatedState{}) {
-	// 	return errors.New("cannot persist empty RaftTruncatedState")
-	// }
+	if (*truncState == kvserverpb.RaftTruncatedState{}) {
+		return errors.New("cannot persist empty RaftTruncatedState")
+	}
 	// "Blind" because opts.Stats == nil and timestamp.IsEmpty().
 	return storage.MVCCBlindPutProto(
 		ctx,

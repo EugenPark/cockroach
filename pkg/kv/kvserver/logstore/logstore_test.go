@@ -91,7 +91,7 @@ func TestRaftStorageWrites(t *testing.T) {
 		t.Helper()
 		var newState RaftState
 		batch := writeBatch(func(rw storage.ReadWriter) {
-			require.NoError(t, StoreHardState(ctx, rw, sl, hs))
+			require.NoError(t, storeHardState(ctx, rw, sl, hs))
 			var err error
 			entriesToFlush, lastEntry := metronome.FilterEntries(ctx, entries, func(ent raftpb.Entry) {})
 			newState, err = logAppend(ctx, sl.RaftLogPrefix(), rw, state, lastEntry, entriesToFlush)

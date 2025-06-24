@@ -230,7 +230,7 @@ func (s *LogStore) storeEntriesAndCommitBatch(
 			}
 
 			if err := delayedBatch.Commit(true); err != nil {
-				log.Errorf(ctx, "Delayed MVCCPut failed: %v", err)
+				log.Errorf(ctx, "Delayed write failed: %v", err)
 			}
 		}
 
@@ -255,7 +255,7 @@ func (s *LogStore) storeEntriesAndCommitBatch(
 		stats.End = crtime.NowMono()
 	}
 
-	if err := StoreHardState(ctx, batch, s.StateLoader, m.HardState); err != nil {
+	if err := storeHardState(ctx, batch, s.StateLoader, m.HardState); err != nil {
 		return RaftState{}, err
 	}
 
@@ -413,7 +413,7 @@ var logAppendPool = sync.Pool{
 	},
 }
 
-func StoreHardState(
+func storeHardState(
 	ctx context.Context, w storage.Writer, sl StateLoader, hs raftpb.HardState,
 ) error {
 	if raft.IsEmptyHardState(hs) {
@@ -702,10 +702,7 @@ func LoadEntries(
 		return nil, 0, 0, errors.Errorf("lo:%d is greater than hi:%d", lo, hi)
 	}
 
-	n := hi - lo
-	n = min(n, 100)
-
-	ents := make([]raftpb.Entry, 0, n)
+	ents := make([]raftpb.Entry, 0, hi-lo)
 	ents, _, hitIndex, _ := eCache.Scan(ents, rangeID, lo, hi, maxBytes)
 
 	// TODO(pav-kv): pass the sizeHelper to eCache.Scan above, to avoid scanning
@@ -783,7 +780,6 @@ func LoadEntries(
 
 	eCache.Add(rangeID, ents, false /* truncate */)
 
-	// TODO: move the compact check infront of this so that we do not get the case where we return because sh.done is true even though we actually compacted
 	// Did the correct number of results come back? If so, we're all good.
 	// Did we hit the size limits? If so, return what we have.
 	if len(ents) == int(hi-lo) || sh.done {
@@ -798,7 +794,6 @@ func LoadEntries(
 		// The requested lo index has already been truncated.
 		return nil, 0, 0, raft.ErrCompacted
 	}
-
 	// We either have a gap in the log, or hi > LastIndex. Let the caller
 	// distinguish if they need to.
 	fmt.Printf("Entries %d, %d, %d: [", lo, expectedIndex, hi)

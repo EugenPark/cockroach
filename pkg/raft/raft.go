@@ -2409,7 +2409,7 @@ func leadSliceFromMsgApp(m *pb.Message) LeadSlice {
 }
 
 func (r *raft) handleAppendEntries(m pb.Message) {
-	r.checkMatch(m)
+	r.checkMatch(m.Match)
 
 	// TODO(pav-kv): construct LeadSlice up the stack next to receiving the
 	// message, and validate it before taking any action (e.g. bumping term).
@@ -2489,15 +2489,20 @@ func (r *raft) handleAppendEntries(m pb.Message) {
 // checkMatch ensures that the follower's log size does not contradict to the
 // leader's idea where it matches. If the logs do not match but last index is 0
 // indicating it just restarted and requires a snapshot to catch up request a snapshot
-func (r *raft) checkMatch(m pb.Message) {
-	last := r.raftLog.lastIndex()
-	if last < m.Match && r.recovered {
-		r.logger.Panicf("match(%d) is out of range [lastIndex(%d)]. Was the raft log corrupted, truncated, or lost?", m.Match, last)
+func (r *raft) checkMatch(match uint64) {
+	// TODO(pav-kv): lastIndex() might be not yet durable. Make this check
+	// stronger by comparing `match` with the last durable index.
+	//
+	// TODO(pav-kv): make this check stronger when the raftLog stores the last
+	// accepted term. If `match` is non-zero, this follower's log last accepted
+	// term must equal the leader term, and have entries up to `match` durable.
+	if last := r.raftLog.lastIndex(); last < match {
+		r.logger.Panicf("match(%d) is out of range [lastIndex(%d)]. Was the raft log corrupted, truncated, or lost?", match, last)
 	}
 }
 
 func (r *raft) handleHeartbeat(m pb.Message) {
-	r.checkMatch(m)
+	r.checkMatch(m.Match)
 	r.send(pb.Message{To: m.From, Type: pb.MsgHeartbeatResp})
 }
 
