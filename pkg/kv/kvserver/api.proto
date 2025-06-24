@@ -8,12 +8,12 @@ package cockroach.kv.kvserver;
 option go_package = "github.com/cockroachdb/cockroach/pkg/kv/kvserver";
 
 import "kv/kvserver/kvserverpb/state.proto";
+import "raft/raftpb/raft.proto";
 import "roachpb/data.proto";
 import "storage/enginepb/mvcc.proto";
 import "storage/enginepb/mvcc3.proto";
 import "storage/enginepb/rocksdb.proto";
 import "gogoproto/gogo.proto";
-import "raft/raftpb/raft.proto";
 
 // StoreRequestHeader locates a Store on a Node.
 message StoreRequestHeader {
@@ -137,7 +137,7 @@ message CompactionConcurrencyRequest {
 
 message CompactionConcurrencyResponse {}
 
-message GetUntruncatedLogRequest {
+message GetMissingEntriesRequest {
   StoreRequestHeader header = 1
       [ (gogoproto.nullable) = false, (gogoproto.embed) = true ];
   int64 range_id = 2 [
@@ -148,6 +148,6 @@ message GetUntruncatedLogRequest {
   repeated uint64 missing_indices = 3;
 }
 
-message GetUntruncatedLogResponse {
+message GetMissingEntriesResponse {
   repeated raftpb.Entry entries = 1 [ (gogoproto.nullable) = false ];
 }

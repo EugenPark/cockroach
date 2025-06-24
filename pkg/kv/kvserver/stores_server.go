@@ -68,10 +68,10 @@ func (is Server) CollectChecksum(
 	return resp, err
 }
 
-func (is Server) GetUntruncatedLog(
-	ctx context.Context, req *GetUntruncatedLogRequest,
-) (*GetUntruncatedLogResponse, error) {
-	resp := &GetUntruncatedLogResponse{}
+func (is Server) GetMissingEntries(
+	ctx context.Context, req *GetMissingEntriesRequest,
+) (*GetMissingEntriesResponse, error) {
+	resp := &GetMissingEntriesResponse{}
 	err := is.execStoreCommand(ctx, req.StoreRequestHeader,
 		func(ctx context.Context, s *Store) error {
 			rangeID := req.RangeID

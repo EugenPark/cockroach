@@ -43,8 +43,8 @@ service PerReplica {
       returns (cockroach.kv.kvserver.WaitForApplicationResponse) {}
   rpc WaitForReplicaInit(cockroach.kv.kvserver.WaitForReplicaInitRequest)
       returns (cockroach.kv.kvserver.WaitForReplicaInitResponse) {}
-  rpc GetUntruncatedLog(cockroach.kv.kvserver.GetUntruncatedLogRequest)
-      returns (cockroach.kv.kvserver.GetUntruncatedLogResponse);
+  rpc GetMissingEntries(cockroach.kv.kvserver.GetMissingEntriesRequest)
+      returns (cockroach.kv.kvserver.GetMissingEntriesResponse) {}
 }
 
 service PerStore {

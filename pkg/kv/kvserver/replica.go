@@ -2996,7 +2996,7 @@ func (r *Replica) recoverLogRaftMuLocked(
 		rep := replica // Deep copy works because all fields are values
 		inFlightRequests++
 		go func() {
-			resp, err := r.store.GetUntruncatedLogFromReplica(ctx, rep, r.RangeID, missingIndices)
+			resp, err := r.store.GetMissingEntriesFromReplica(ctx, rep, r.RangeID, missingIndices)
 			if err != nil {
 				responses <- recoveryResponse{
 					err: err,

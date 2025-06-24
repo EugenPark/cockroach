@@ -2456,10 +2456,10 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 	return nil
 }
 
-func (s *Store) GetUntruncatedLogFromReplica(
+func (s *Store) GetMissingEntriesFromReplica(
 	ctx context.Context, replica roachpb.ReplicaDescriptor, rangeID roachpb.RangeID, missingIndices []uint64,
-) (GetUntruncatedLogResponse, error) {
-	var resp *GetUntruncatedLogResponse
+) (GetMissingEntriesResponse, error) {
+	var resp *GetMissingEntriesResponse
 	var lastErr error
 
 	// Use exponential backoff with reasonable defaults.
@@ -2480,12 +2480,12 @@ func (s *Store) GetUntruncatedLogFromReplica(
 		}
 
 		client := NewPerReplicaClient(conn)
-		req := &GetUntruncatedLogRequest{
+		req := &GetMissingEntriesRequest{
 			StoreRequestHeader: StoreRequestHeader{NodeID: replica.NodeID, StoreID: replica.StoreID},
 			RangeID:            rangeID,
 			MissingIndices:     missingIndices,
 		}
-		resp, err = client.GetUntruncatedLog(ctx, req)
+		resp, err = client.GetMissingEntries(ctx, req)
 		if err != nil {
 			lastErr = err
 			continue // retry on RPC error
@@ -2494,31 +2494,9 @@ func (s *Store) GetUntruncatedLogFromReplica(
 	}
 
 	// Retry exhausted
-	return GetUntruncatedLogResponse{}, errors.Wrapf(lastErr,
-		"GetUntruncatedLogFromReplica: failed after retries for node %d", replica.NodeID)
+	return GetMissingEntriesResponse{}, errors.Wrapf(lastErr,
+		"GetMissingEntriesFromReplica: failed after retries for node %d", replica.NodeID)
 }
-
-//
-// func (s *Store) GetUntruncatedLogFromReplica(
-// 	ctx context.Context, replica roachpb.ReplicaDescriptor, rangeID roachpb.RangeID, missingIndices []uint64,
-// ) (GetUntruncatedLogResponse, error) {
-// 	conn, err := s.cfg.NodeDialer.Dial(ctx, replica.NodeID, rpc.DefaultClass)
-// 	if err != nil {
-// 		return GetUntruncatedLogResponse{},
-// 			errors.Wrapf(err, "could not dial node ID %d", replica.NodeID)
-// 	}
-// 	client := NewPerReplicaClient(conn)
-// 	req := &GetUntruncatedLogRequest{
-// 		StoreRequestHeader: StoreRequestHeader{NodeID: replica.NodeID, StoreID: replica.StoreID},
-// 		RangeID:            rangeID,
-// 		MissingIndices:     missingIndices,
-// 	}
-// 	resp, err := client.GetUntruncatedLog(ctx, req)
-// 	if err != nil {
-// 		return GetUntruncatedLogResponse{}, err
-// 	}
-// 	return *resp, nil
-// }
 
 // WaitForInit waits for any asynchronous processes begun in Start()
 // to complete their initialization. In particular, this includes
