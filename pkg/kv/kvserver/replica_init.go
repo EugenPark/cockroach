@@ -46,8 +46,6 @@ const (
 	mergeQueueThrottleDuration = 5 * time.Second
 )
 
-var ErrLogIsNotRecoverable = errors.New("Log could not be recovered")
-
 // defRaftConnClass is the default rpc.ConnectionClass used for non-system raft
 // traffic. Normally it is RaftClass, but can be flipped to DefaultClass if the
 // corresponding env variable is true.
@@ -85,7 +83,7 @@ func loadInitializedReplicaForTesting(
 
 	// No need to wait for previous lease to expire since this is only used in
 	// tests and some tests don't expect the extra delay.
-	if err := r.initRaftMuLockedReplicaMuLocked(state, false, 0); err != nil {
+	if err := r.initRaftMuLockedReplicaMuLocked(state, false, &raft.MissingIndices{Slice: []uint64{}}); err != nil {
 		return nil, err
 	}
 
@@ -94,7 +92,7 @@ func loadInitializedReplicaForTesting(
 
 // newInitializedReplica creates an initialized Replica from its loaded state.
 func newInitializedReplica(
-	store *Store, repl kvstorage.Replica, waitForPrevLeaseToExpire bool,
+	ctx context.Context, store *Store, repl kvstorage.Replica, waitForPrevLeaseToExpire bool,
 ) (*Replica, error) {
 	r := newUninitializedReplicaWithoutRaftGroup(store, repl.RangeID, repl.ReplicaID)
 	r.raftMu.Lock()
@@ -105,12 +103,12 @@ func newInitializedReplica(
 	reader := store.TODOEngine().NewReader(storage.StandardDurability)
 	defer reader.Close()
 
-	ctx := context.Background()
 	ls := r.LogStorageRaftMuLocked()
-	ls.Metronome.SetSchemes(repl.Desc.GetAllQuorums())
+	// ls.Metronome.SetSchemes(repl.Desc.GetAllQuorums())
+	r.maybeRebalanceMetronomeRaftMuLocked(repl.Desc.GetAllQuorums())
 
-	missingIndex, err := r.recoverLogRaftMuLocked(ctx, repl.Desc)
-	if err != nil && !errors.Is(ErrLogIsNotRecoverable, err) {
+	missingIndices, err := r.recoverLogRaftMuLocked(ctx, repl.Desc)
+	if err != nil {
 		return nil, err
 	}
 
@@ -119,7 +117,7 @@ func newInitializedReplica(
 		return nil, err
 	}
 
-	if err := r.initRaftMuLockedReplicaMuLocked(loaded, waitForPrevLeaseToExpire, missingIndex); err != nil {
+	if err := r.initRaftMuLockedReplicaMuLocked(loaded, waitForPrevLeaseToExpire, missingIndices); err != nil {
 		return nil, err
 	}
 
@@ -141,7 +139,7 @@ func newUninitializedReplica(
 	defer r.raftMu.Unlock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if err := r.initRaftGroupRaftMuLockedReplicaMuLocked(0); err != nil {
+	if err := r.initRaftGroupRaftMuLockedReplicaMuLocked(&raft.MissingIndices{Slice: []uint64{}}); err != nil {
 		return nil, err
 	}
 	return r, nil
@@ -330,7 +328,7 @@ func (r *Replica) setStartKeyLocked(startKey roachpb.RKey) {
 // initRaftMuLockedReplicaMuLocked initializes the Replica using the state
 // loaded from storage. Must not be called more than once on a Replica.
 func (r *Replica) initRaftMuLockedReplicaMuLocked(
-	s kvstorage.LoadedReplicaState, waitForPrevLeaseToExpire bool, missingIndex uint64,
+	s kvstorage.LoadedReplicaState, waitForPrevLeaseToExpire bool, missingIndices *raft.MissingIndices,
 ) error {
 	desc := s.ReplState.Desc
 	// Ensure that the loaded state corresponds to the same replica.
@@ -360,7 +358,7 @@ func (r *Replica) initRaftMuLockedReplicaMuLocked(
 	//
 	// We do this before the call to setDescLockedRaftMuLocked(), since it flips
 	// isInitialized and we'd like the Raft group to be in place before then.
-	if err := r.initRaftGroupRaftMuLockedReplicaMuLocked(missingIndex); err != nil {
+	if err := r.initRaftGroupRaftMuLockedReplicaMuLocked(missingIndices); err != nil {
 		return err
 	}
 
@@ -398,7 +396,7 @@ func (r *Replica) initRaftMuLockedReplicaMuLocked(
 
 // initRaftGroupRaftMuLockedReplicaMuLocked initializes a Raft group for the
 // replica, replacing the existing Raft group if any.
-func (r *Replica) initRaftGroupRaftMuLockedReplicaMuLocked(missingIndex uint64) error {
+func (r *Replica) initRaftGroupRaftMuLockedReplicaMuLocked(missingIndices *raft.MissingIndices) error {
 	ctx := r.AnnotateCtx(context.Background())
 	rg, err := raft.NewRawNode(newRaftConfig(
 		ctx,
@@ -411,7 +409,7 @@ func (r *Replica) initRaftGroupRaftMuLockedReplicaMuLocked(missingIndex uint64) 
 		(*replicaRLockedStoreLiveness)(r),
 		r.store.raftMetrics,
 		r.store.TestingKnobs().RaftTestingKnobs,
-		missingIndex,
+		missingIndices,
 	))
 	if err != nil {
 		return err

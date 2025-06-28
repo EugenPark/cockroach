@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/replica_rac2"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -64,6 +65,9 @@ func TestReplicaUpdateLastReplicaAdded(t *testing.T) {
 			r.flowControlV2 = noopProcessor{}
 			r.store = tc.store
 			r.concMgr = tc.repl.concMgr
+			r.raftMu.logStorage = &logstore.LogStore{
+				Metronome: logstore.InitializeMetronome(1, stopper),
+			}
 			r.setDescRaftMuLocked(context.Background(), &c.newDesc)
 			if c.expectedLastReplicaAdded != r.mu.lastReplicaAdded {
 				t.Fatalf("expected %d, but found %d",

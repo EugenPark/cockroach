@@ -38,6 +38,7 @@ func TestHandleTruncatedStateBelowRaft(t *testing.T) {
 
 	ctx := context.Background()
 	stopper := stop.NewStopper()
+	defer stopper.Stop(ctx)
 	datadriven.Walk(t, datapathutils.TestDataPath(t, "truncated_state"), func(t *testing.T, path string) {
 		const rangeID = 12
 		loader := logstore.NewStateLoader(rangeID)

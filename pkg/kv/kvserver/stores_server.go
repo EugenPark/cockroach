@@ -76,21 +76,28 @@ func (is Server) GetMissingEntries(
 		func(ctx context.Context, s *Store) error {
 			rangeID := req.RangeID
 			missingIndices := req.MissingIndices
-			repl := s.GetReplicaIfExists(rangeID)
-			reader := s.TODOEngine().NewReader(storage.StandardDurability)
-			defer reader.Close()
 
-			if repl == nil {
+			repl := s.GetReplicaIfExists(rangeID)
+			if repl == nil || len(missingIndices) == 0 {
 				return nil
 			}
 
+			reader := s.TODOEngine().NewReader(storage.StandardDurability)
+			defer reader.Close()
+
 			repl.raftMu.AssertHeld()
+			sideloaded := repl.raftMu.sideloaded
+			eCache := repl.raftMu.logStorage.EntryCache
+
+			slices.Sort(missingIndices)
 
 			// Missing entries
-			ents, err := logstore.LoadDiskEntries(ctx, reader, repl.raftMu.sideloaded, repl.raftMu.logStorage.EntryCache, rangeID, missingIndices[0], missingIndices[len(missingIndices)-1])
+			ents, err := logstore.LoadDiskEntries(ctx, reader, sideloaded, eCache, rangeID, missingIndices[0], missingIndices[len(missingIndices)-1])
 			if err != nil {
 				return err
 			}
+
+			// fmt.Printf("Sending Entries %v\n", ents)
 
 			missingEntries := make([]raftpb.Entry, 0, len(missingIndices))
 			for i := range ents {

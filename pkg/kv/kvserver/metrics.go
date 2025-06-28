@@ -1700,6 +1700,18 @@ cache will already have moved on to newer entries.
 		Measurement: "Messages",
 		Unit:        metric.Unit_COUNT,
 	}
+	metaRaftRcvdRecover = metric.Metadata{
+		Name:        "raft.rcvd.recover",
+		Help:        "Number of MsgRecover messages received by this store",
+		Measurement: "Messages",
+		Unit:        metric.Unit_COUNT,
+	}
+	metaRaftRcvdRecoverResp = metric.Metadata{
+		Name:        "raft.rcvd.recoverresp",
+		Help:        "Number of MsgRecoverResp messages received by this store",
+		Measurement: "Messages",
+		Unit:        metric.Unit_COUNT,
+	}
 	metaRaftRcvdDropped = metric.Metadata{
 		Name:        "raft.rcvd.dropped",
 		Help:        "Number of incoming Raft messages dropped (due to queue length or size)",
@@ -3692,6 +3704,8 @@ func newStoreMetrics(histogramWindow time.Duration) *StoreMetrics {
 			raftpb.MsgFortifyLeader:     metric.NewCounter(metaRaftRcvdFortifyLeader),
 			raftpb.MsgFortifyLeaderResp: metric.NewCounter(metaRaftRcvdFortifyLeaderResp),
 			raftpb.MsgDeFortifyLeader:   metric.NewCounter(metaRaftRcvdDeFortifyLeader),
+			raftpb.MsgRecover:           metric.NewCounter(metaRaftRcvdRecover),
+			raftpb.MsgRecoverResp:       metric.NewCounter(metaRaftRcvdRecoverResp),
 		},
 		RaftRcvdDropped:          metric.NewCounter(metaRaftRcvdDropped),
 		RaftRcvdDroppedBytes:     metric.NewCounter(metaRaftRcvdDroppedBytes),

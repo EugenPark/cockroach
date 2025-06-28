@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"math/rand"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -2939,120 +2940,196 @@ type recoveryResponse struct {
 func (r *Replica) recoverLogRaftMuLocked(
 	ctx context.Context,
 	desc *roachpb.RangeDescriptor,
-) (uint64, error) {
+) (*raft.MissingIndices, error) {
+	log.Infof(ctx, "Starting log recovery")
+
 	replicas := desc.Replicas().Descriptors()
-	// Immutable
 	if len(replicas) < 2 {
-		return 0, nil
+		return &raft.MissingIndices{Slice: nil}, nil
 	}
+
 	sideloaded := r.raftMu.sideloaded
+	stateloader := r.raftMu.stateLoader
 	reader := r.store.TODOEngine().NewReader(storage.StandardDurability)
 	defer reader.Close()
+
 	writer := r.store.TODOEngine().NewBatch()
 	defer writer.Close()
 
-	// Mutable
-	responses := make(chan recoveryResponse, len(replicas)/2)
-	var inFlightRequests uint64
 	ls := r.LogStorageRaftMuLocked()
 
-	// Helpers
-	isOwnNode := func(replica roachpb.ReplicaDescriptor) bool {
-		return replica.NodeID == r.NodeID()
-	}
-
-	// Fetch own log from disk
-	ownEntries, err := logstore.LoadDiskEntries(ctx, reader, sideloaded, r.LogStorageRaftMuLocked().EntryCache, r.RangeID, 0, math.MaxUint64-1)
+	// Step 1: Load own log
+	flushedIndices, hi, err := r.loadOwnLog(ctx, reader, sideloaded, ls)
 	if err != nil {
-		return 0, err
+		return &raft.MissingIndices{Slice: nil}, err
 	}
 
-	var lo, hi uint64
-	if len(ownEntries) > 0 {
-		lo = ownEntries[0].Index
-		hi = ownEntries[len(ownEntries)-1].Index
+	hs, err := stateloader.LoadHardState(ctx, reader)
+	if err != nil {
+		return &raft.MissingIndices{Slice: nil}, err
+	}
+
+	ts, err := stateloader.LoadRaftTruncatedState(ctx, reader)
+	if err != nil {
+		return &raft.MissingIndices{Slice: nil}, err
+	}
+
+	lo := uint64(ts.Index) + 1
+
+	missingIndices := &raft.MissingIndices{
+		Slice: ls.Metronome.GetMissingIndices(lo, hi, hs.Commit, flushedIndices),
+	}
+
+	missingIndices.Lock()
+	defer missingIndices.Unlock()
+	fmt.Printf("Node %d Range %d: Committed until %d\n", r.NodeID(), r.RangeID, hs.Commit)
+	if len(missingIndices.Slice) == 0 {
+		log.Warningf(ctx, "No missing indices between [%d, %d]", lo, hi)
+		return missingIndices, nil
+	}
+
+	log.Warningf(ctx, "Missing indices: %v", missingIndices)
+
+	// Prepare for recovery
+	ctx, cancel := context.WithCancel(ctx)
+	responses := make(chan recoveryResponse, len(replicas))
+
+	// Step 2: Launch query goroutine
+	go r.queryMissingEntriesPeriodically(ctx, cancel, replicas, missingIndices, responses)
+
+	// Step 3: Launch response handler goroutine
+	go r.handleRecoveryResponses(ctx, cancel, missingIndices, hs.Commit, responses)
+
+	return missingIndices, nil
+}
+
+func (r *Replica) loadOwnLog(
+	ctx context.Context,
+	reader storage.Reader,
+	sideloaded logstore.SideloadStorage,
+	ls *logstore.LogStore,
+) (flushed []uint64, hi uint64, err error) {
+	entries, err := logstore.LoadDiskEntries(ctx, reader, sideloaded, ls.EntryCache, r.RangeID, 0, math.MaxUint64-1)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	if len(entries) > 0 {
+		hi = entries[len(entries)-1].Index
 	} else {
-		lo = 0
 		hi = math.MaxUint64
 	}
 
-	flushedIndices := make([]uint64, 0, len(ownEntries))
-	for _, ent := range ownEntries {
-		flushedIndices = append(flushedIndices, ent.Index)
+	flushed = make([]uint64, 0, len(entries))
+	for _, ent := range entries {
+		flushed = append(flushed, ent.Index)
 	}
+	return flushed, hi, nil
+}
 
-	missingIndices := ls.Metronome.GetMissingIndices(lo, hi, flushedIndices)
-	if len(missingIndices) == 0 {
-		return 0, nil
-	}
+func (r *Replica) queryMissingEntriesPeriodically(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	replicas []roachpb.ReplicaDescriptor,
+	missing *raft.MissingIndices,
+	responses chan<- recoveryResponse,
+) {
+	const min, max = 10, 15
+	random := rand.Intn(max-min+1) + min
+	ticker := time.NewTicker(time.Duration(random) * time.Second)
+	defer ticker.Stop()
 
-	// Query other nodes for log entries
-	for _, replica := range replicas {
-		// Skip own replica
-		if isOwnNode(replica) {
-			continue
-		}
-
-		rep := replica // Deep copy works because all fields are values
-		inFlightRequests++
-		go func() {
-			resp, err := r.store.GetMissingEntriesFromReplica(ctx, rep, r.RangeID, missingIndices)
-			if err != nil {
-				responses <- recoveryResponse{
-					err: err,
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			for _, rep := range replicas {
+				if rep.NodeID == r.NodeID() {
+					continue
 				}
-				return
-			}
 
-			responses <- recoveryResponse{entries: resp.Entries}
-		}()
-	}
-
-	if inFlightRequests == 0 {
-		// We do not expect any answers so there is nothing to recover from
-		return 0, nil
-	}
-
-	for resp := range responses {
-
-		// Bookkeeping
-		inFlightRequests--
-		if inFlightRequests == 0 {
-			close(responses)
-		}
-
-		if resp.err != nil {
-			return 0, resp.err
-		}
-
-		// Fast Path
-		// TODO: Sideload the entries perhaps?
-		entries := resp.entries
-		if len(entries) == 0 {
-			continue
-		}
-
-		var newEntries []raftpb.Entry
-		for _, ent := range entries {
-			if index := slices.Index(missingIndices, ent.Index); index != -1 {
-				missingIndices = slices.Delete(missingIndices, index, index+1)
-				newEntries = append(newEntries, ent)
+				go r.queryMissingEntries(ctx, rep, missing, responses)
 			}
 		}
-		entries = newEntries
+	}
+}
 
-		thinEntries, _, err := logstore.MaybeSideloadEntries(ctx, entries, sideloaded)
-		if err != nil {
-			return 0, err
+func (r *Replica) queryMissingEntries(
+	ctx context.Context,
+	rep roachpb.ReplicaDescriptor,
+	missing *raft.MissingIndices,
+	responses chan<- recoveryResponse,
+) {
+	missing.Lock()
+
+	fmt.Printf("Node %d Querying %d for entries in %d\n", r.NodeID(), rep.NodeID, r.RangeID)
+	entriesResp, err := r.store.GetMissingEntriesFromReplica(ctx, rep, r.RangeID, missing.Slice)
+
+	missing.Unlock()
+	select {
+	case <-ctx.Done():
+		return
+	case responses <- recoveryResponse{entries: entriesResp.Entries, err: err}:
+	}
+}
+
+func (r *Replica) handleRecoveryResponses(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	missing *raft.MissingIndices,
+	committed uint64,
+	responses <-chan recoveryResponse,
+) {
+	for {
+		select {
+		case <-ctx.Done():
+			fmt.Printf("Node %d Range %d recovered\n", r.NodeID(), r.RangeID)
+			return
+		case resp := <-responses:
+			if resp.err != nil {
+				log.Warningf(ctx, "error fetching missing entries: %v", resp.err)
+				continue
+			}
+			fmt.Printf("Node %d Received [", r.NodeID())
+			for _, ent := range resp.entries {
+				fmt.Printf("(%d, %v) ", ent.Index, ent.Type)
+			}
+			fmt.Printf("]\n")
+
+			filtered := make([]raftpb.Entry, 0, len(resp.entries))
+			missing.Lock()
+			for _, ent := range resp.entries {
+				if idx := slices.Index(missing.Slice, ent.Index); idx != -1 {
+					missing.Slice = slices.Delete(missing.Slice, idx, idx+1)
+					filtered = append(filtered, ent)
+				}
+			}
+			recovered := len(missing.Slice) == 0
+			if recovered {
+				cancel()
+			}
+
+			fmt.Printf("Node %d Still missing: [", r.NodeID())
+			for _, i := range missing.Slice {
+				fmt.Printf("%d, ", i)
+			}
+			fmt.Printf("]\n")
+
+			r.raftMu.Lock()
+			sideloaded := r.raftMu.sideloaded
+			thin, _, err := logstore.MaybeSideloadEntries(ctx, filtered, sideloaded)
+			if err != nil {
+				log.Errorf(ctx, "sideload error: %v", err)
+				continue
+			}
+			// BUG: At times there were double ents
+			ls := r.LogStorageRaftMuLocked()
+			ls.Metronome.AddRecoveredEntries(thin)
+
+			r.raftMu.Unlock()
+			missing.Unlock()
+
 		}
-
-		ls.Metronome.AddRecoveredEntries(thinEntries)
 	}
-
-	if len(missingIndices) > 0 {
-		log.Warningf(ctx, "Could not recover the log completely. Missing %#v", missingIndices)
-		return missingIndices[0], ErrLogIsNotRecoverable
-	}
-
-	return 0, nil
 }

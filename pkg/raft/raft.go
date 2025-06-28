@@ -82,6 +82,12 @@ var globalRand = &lockedRand{}
 // is because it's simpler to compare and fill in raft entries
 type CampaignType string
 
+// TODO: Maybe just embed slice?
+type MissingIndices struct {
+	sync.Mutex
+	Slice []uint64
+}
+
 // Config contains the parameters to start a raft.
 type Config struct {
 	// ID is the identity of the local raft. ID cannot be 0.
@@ -247,8 +253,8 @@ type Config struct {
 	// StoreLiveness is a reference to the store liveness fabric.
 	StoreLiveness raftstoreliveness.StoreLiveness
 
-	// First Missing Index
-	MissingIndex pb.Index
+	// Missing indices meaning we have not fully recovered yet
+	MissingIndices *MissingIndices
 
 	// CRDBVersion exposes the active version to Raft. This helps version-gating
 	// features.
@@ -438,7 +444,7 @@ type raft struct {
 	testingKnobs  *TestingKnobs
 
 	// We might miss some entries that need to be recovered
-	recovered bool
+	missingIndices *MissingIndices
 }
 
 func newRaft(c *Config) *raft {
@@ -473,7 +479,7 @@ func newRaft(c *Config) *raft {
 		crdbVersion:                 c.CRDBVersion,
 		metrics:                     c.Metrics,
 		testingKnobs:                c.TestingKnobs,
-		recovered:                   true,
+		missingIndices:              c.MissingIndices,
 	}
 	lastID := r.raftLog.lastEntryID()
 
@@ -491,18 +497,6 @@ func newRaft(c *Config) *raft {
 		panic(err)
 	}
 	assertConfStatesEquivalent(r.logger, cs, r.switchToConfig(cfg, progressMap))
-
-	if c.MissingIndex != 0 {
-		r.recovered = false
-		r.send(
-			pb.Message{
-				To:    r.lead,
-				From:  r.id,
-				Type:  pb.MsgRecover,
-				Index: uint64(c.MissingIndex),
-			},
-		)
-	}
 
 	if !IsEmptyHardState(hs) {
 		r.loadState(hs)
@@ -1559,62 +1553,6 @@ func (r *raft) poll(
 }
 
 func (r *raft) Step(m pb.Message) error {
-	if !r.recovered {
-		switch m.Type {
-		case pb.MsgHeartbeat:
-			r.handleHeartbeat(m)
-			return nil
-		case pb.MsgRecover:
-			recoverFromIdx := m.Index
-
-			// Check if requested index has been compacted
-			if recoverFromIdx <= r.raftLog.compacted() {
-				// Too far behind, send snapshot
-				snap, err := r.raftLog.snapshot()
-				if err != nil {
-					return err
-				}
-
-				r.send(pb.Message{
-					To:       m.From,
-					From:     r.id,
-					Type:     pb.MsgRecoverResp,
-					Snapshot: snap,
-				})
-				return nil
-			}
-
-			hi := r.raftLog.lastIndex() + 1
-			ents, err := r.raftLog.slice(recoverFromIdx+1, hi, noLimit)
-			if err != nil {
-				return err
-			}
-
-			r.send(pb.Message{
-				To:      m.From,
-				From:    r.id,
-				Type:    pb.MsgRecoverResp,
-				Index:   recoverFromIdx,
-				Entries: ents,
-			})
-
-			return nil
-
-		case pb.MsgRecoverResp:
-			if m.Snapshot != nil {
-				r.handleSnapshot(m)
-				return nil
-			}
-
-			if len(m.Entries) > 0 {
-				r.handleAppendEntries(m)
-			}
-
-			r.recovered = true
-			return nil
-		}
-	}
-
 	// Handle the message term, which may result in our stepping down to a follower.
 	switch {
 	case m.Term == 0:
@@ -1898,6 +1836,7 @@ func (r *raft) logMsgHigherTerm(m pb.Message, suffix redact.SafeString) {
 type stepFunc func(r *raft, m pb.Message) error
 
 func stepLeader(r *raft, m pb.Message) error {
+	// fmt.Printf("Step Leader %d\n", r.id)
 	// These message types do not require any progress for m.From.
 	switch m.Type {
 	case pb.MsgBeat:
@@ -2285,6 +2224,40 @@ func stepCandidate(r *raft, m pb.Message) error {
 }
 
 func stepFollower(r *raft, m pb.Message) error {
+	r.missingIndices.Lock()
+	recovered := len(r.missingIndices.Slice) == 0
+	r.missingIndices.Unlock()
+
+	fmt.Printf("RaftID %d: Recovered %t Step Follower Message %d %v\n", r.id, recovered, m.Index, m.Type)
+
+	// We can only step once we are recovered
+	if !recovered {
+		switch m.Type {
+		// Recovery Snap
+		case pb.MsgSnap:
+			r.handleSnapshot(m)
+		case pb.MsgApp:
+			r.missingIndices.Lock()
+			hintIndex := r.missingIndices.Slice[0]
+			r.missingIndices.Unlock()
+
+			hintTerm := uint64(0)
+			r.send(pb.Message{
+				To:    m.From,
+				Type:  pb.MsgAppResp,
+				Index: m.Index,
+				// This helps the leader track the follower's commit index. This flow is
+				// independent from accepted/rejected log appends.
+				Commit:     r.raftLog.committed,
+				Reject:     true,
+				RejectHint: hintIndex,
+				LogTerm:    hintTerm,
+			})
+		}
+
+		return nil
+	}
+
 	if IsMsgFromLeader(m.Type) {
 		if m.Type != pb.MsgDeFortifyLeader {
 			// If we receive any message from the leader except a MsgDeFortifyLeader,
@@ -2447,12 +2420,17 @@ func (r *raft) handleAppendEntries(m pb.Message) {
 		// committed entries at m.Term (by raft invariants), so it is safe to bump
 		// the commit index even if the MsgApp is stale.
 		lastIndex := a.lastIndex()
+
 		r.raftLog.commitTo(LogMark{Term: m.Term, Index: min(m.Commit, lastIndex)})
 		r.send(pb.Message{To: m.From, Type: pb.MsgAppResp, Index: lastIndex,
 			Commit: r.raftLog.committed})
 		return
 	}
+
 	r.logger.Debugf("%x [logterm: %d, index: %d] rejected MsgApp [logterm: %d, index: %d] from %x",
+		r.id, r.raftLog.zeroTermOnOutOfBounds(r.raftLog.term(m.Index)), m.Index, m.LogTerm, m.Index, m.From)
+
+	fmt.Printf("%x [logterm: %d, index: %d] rejected MsgApp [logterm: %d, index: %d] from %x",
 		r.id, r.raftLog.zeroTermOnOutOfBounds(r.raftLog.term(m.Index)), m.Index, m.LogTerm, m.Index, m.From)
 
 	// Our log does not match the leader's at index m.Index. Return a hint to the
@@ -2473,6 +2451,9 @@ func (r *raft) handleAppendEntries(m pb.Message) {
 	// LogTerm in this response in any case, so we don't verify it here.
 	hintIndex := min(m.Index, r.raftLog.lastIndex())
 	hintIndex, hintTerm := r.raftLog.findConflictByTerm(hintIndex, m.LogTerm)
+
+	fmt.Printf("HintIndx and term %d, %d\n", hintIndex, hintTerm)
+
 	r.send(pb.Message{
 		To:    m.From,
 		Type:  pb.MsgAppResp,
@@ -2522,6 +2503,23 @@ func (r *raft) handleSnapshot(m pb.Message) {
 
 	id := s.lastEntryID()
 	if r.restore(s) {
+		lastIndex := r.raftLog.lastIndex()
+
+		r.missingIndices.Lock()
+		missing := r.missingIndices.Slice
+		if len(missing) > 0 {
+			newMissingIndices := missing[:0]
+			for _, index := range missing {
+				if index <= lastIndex {
+					continue
+				}
+
+				newMissingIndices = append(newMissingIndices, index)
+			}
+			r.missingIndices.Slice = newMissingIndices
+		}
+		r.missingIndices.Unlock()
+
 		r.logger.Infof("%x [commit: %d] restored snapshot [index: %d, term: %d]",
 			r.id, r.raftLog.committed, id.index, id.term)
 
@@ -2537,7 +2535,7 @@ func (r *raft) handleSnapshot(m pb.Message) {
 		// From section 5.4 of the Raft paper:
 		// if a log entry is committed in a given term, then that entry will be
 		// present in the logs of the leaders for all higher-numbered terms.
-		r.send(pb.Message{To: m.From, Type: pb.MsgAppResp, Index: r.raftLog.lastIndex(),
+		r.send(pb.Message{To: m.From, Type: pb.MsgAppResp, Index: lastIndex,
 			Commit: r.raftLog.committed})
 
 		// A leadership change may have happened while the snapshot was in flight.
@@ -2758,7 +2756,10 @@ func (r *raft) restore(s snapshot) bool {
 // which is true when its own id is in progress list.
 func (r *raft) promotable() bool {
 	pr := r.trk.Progress(r.id)
-	return pr != nil && !pr.IsLearner && !r.raftLog.hasNextOrInProgressSnapshot()
+	r.missingIndices.Lock()
+	defer r.missingIndices.Unlock()
+
+	return pr != nil && !pr.IsLearner && !r.raftLog.hasNextOrInProgressSnapshot() && len(r.missingIndices.Slice) == 0
 }
 
 func (r *raft) applyConfChange(cc pb.ConfChangeV2) pb.ConfState {
@@ -2871,7 +2872,9 @@ func (r *raft) switchToConfig(cfg quorum.Config, progressMap tracker.ProgressMap
 }
 
 func (r *raft) loadState(state pb.HardState) {
-	if state.Commit < r.raftLog.committed || state.Commit > r.raftLog.lastIndex() && r.recovered {
+	r.missingIndices.Lock()
+	defer r.missingIndices.Unlock()
+	if state.Commit < r.raftLog.committed || state.Commit > r.raftLog.lastIndex() && len(r.missingIndices.Slice) == 0 {
 		r.logger.Panicf("%x state.commit %d is out of range [%d, %d]", r.id, state.Commit, r.raftLog.committed, r.raftLog.lastIndex())
 	}
 
@@ -2900,7 +2903,7 @@ func (r *raft) loadState(state pb.HardState) {
 }
 
 // atRandomizedElectionTimeout returns true if r.electionElapsed modulo the
-// r.randomizedElectionTimeout is equal to 0. This means that at every
+// r.randomizedElectionTimeout is equal to 0. This means that at everyraft.go
 // r.randomizedElectionTimeout period, this method will return true once.
 func (r *raft) atRandomizedElectionTimeout() bool {
 	return r.electionElapsed != 0 && r.electionElapsed%r.randomizedElectionTimeout == 0

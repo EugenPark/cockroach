@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+
 	"math/rand"
 	"slices"
 	"sort"
@@ -61,18 +62,15 @@ func (tq *timeoutQueue) addTimeout(ctx context.Context, index raftpb.Index, dura
 	}
 }
 
-func (tq *timeoutQueue) cancelTimeout(ctx context.Context, index raftpb.Index) {
+func (tq *timeoutQueue) cancelTimeout(index raftpb.Index) {
 	// This was an index which was flushed so no need to cancel anything
 	tout, ok := tq.queue[index]
 	if !ok {
-		// log.Info(ctx, "No timeout was found proceed")
 		return
 	}
 
-	// log.Info(ctx, "delete timeout")
 	close(tout)
 	delete(tq.queue, index)
-	// log.Info(ctx, "deleted timeout success")
 }
 
 // RaftLogMap Logic for allowing logs with gaps
@@ -135,6 +133,15 @@ func (rlm *RaftLogMap) GetLast() (raftpb.Entry, bool) {
 
 	ent := rlm.entries[len(rlm.entries)-1]
 	return ent, true
+}
+
+func (rlm *RaftLogMap) Get(index uint64) (raftpb.Entry, bool) {
+	for i, ent := range rlm.entries {
+		if ent.Index == index {
+			return rlm.entries[i], true
+		}
+	}
+	return raftpb.Entry{}, false
 }
 
 // Returns entries in [lo, hi)
@@ -232,42 +239,34 @@ func (m *Metronome) GetSchemes() [][]roachpb.ReplicaID {
 	return m.schemes
 }
 
-func (m *Metronome) Commit(ctx context.Context, toApply []raftpb.Entry) {
+func (m *Metronome) Commit(toApply []raftpb.Entry) {
 	if m == nil {
 		return
 	}
 
 	for _, ent := range toApply {
-		m.inflightQueue.cancelTimeout(ctx, raftpb.Index(ent.Index))
+		m.inflightQueue.cancelTimeout(raftpb.Index(ent.Index))
 	}
 }
 
-func (m *Metronome) GetMissingIndices(lo, hi uint64, flushedIndices []uint64) []uint64 {
+func (m *Metronome) GetMissingIndices(lo, hi, commit uint64, flushedIndices []uint64) []uint64 {
 	var missingIndices []uint64
-
-	// Discover lower bounds
-	lowerBound := lo
-	for lowerBound > 0 {
-		lowerBound--
-		if m.shouldFlush(lowerBound) {
-			lowerBound++
-			break
-		}
-	}
 
 	// Discover higher bounds
 	higherBound := hi
 	for higherBound < math.MaxUint64 {
-		higherBound++
-		if m.shouldFlush(higherBound) {
-			higherBound--
+		if m.shouldFlush(higherBound + 1) {
 			break
 		}
+
+		higherBound++
 	}
 
+	higherBound = max(higherBound, commit)
+
 	// Iterate from lowerBound to higherBound and find the missing entries
-	for i := lowerBound; i <= higherBound; i++ {
-		if slices.Contains(flushedIndices, i) || m.shouldFlush(i) {
+	for i := lo; i <= higherBound; i++ {
+		if slices.Contains(flushedIndices, i) {
 			continue
 		}
 
@@ -315,7 +314,7 @@ func (m *Metronome) ShouldRebalance(otherScheme []roachpb.ReplicaID) bool {
 
 func (m *Metronome) FilterEntries(ctx context.Context, entries []raftpb.Entry, cb func(ent raftpb.Entry)) ([]raftpb.Entry, raftpb.Entry) {
 	// log.Infof(ctx, "Filtering Entries\n")
-	min := 100 // milliseconds
+	min := 50  // milliseconds
 	max := 150 // milliseconds
 	randomMs := rand.Intn(max-min+1) + min
 	duration := time.Duration(randomMs) * time.Millisecond
@@ -324,13 +323,18 @@ func (m *Metronome) FilterEntries(ctx context.Context, entries []raftpb.Entry, c
 	filteredEntries := make([]raftpb.Entry, 0, len(entries))
 	lastEntry := entries[len(entries)-1]
 
+	// TODO: do not hold lock for that long
 	m.unflushedEntries.Lock()
 	defer m.unflushedEntries.Unlock()
-	for _, ent := range entries {
+	for i := range entries {
+		copyData := make([]byte, len(entries[i].Data))
+		copy(copyData, entries[i].Data)
+		ent := entries[i]
+		ent.Data = copyData
+
 		shouldFlush := m.shouldFlush(ent.Index)
 
 		if shouldFlush {
-			// log.Info(ctx, "Flushing")
 			unfilteredEntries = append(unfilteredEntries, ent)
 		} else {
 			m.inflightQueue.addTimeout(ctx, raftpb.Index(ent.Index), duration, func() {
@@ -346,6 +350,13 @@ func (m *Metronome) FilterEntries(ctx context.Context, entries []raftpb.Entry, c
 	m.unflushedEntries.Add(filteredEntries)
 
 	return unfilteredEntries, lastEntry
+}
+
+func (m *Metronome) GetEntry(index uint64) (raftpb.Entry, bool) {
+	m.unflushedEntries.Lock()
+	defer m.unflushedEntries.Unlock()
+
+	return m.unflushedEntries.Get(index)
 }
 
 func (m *Metronome) GetLastEntry() (raftpb.Entry, bool) {
@@ -415,8 +426,8 @@ func (m *Metronome) shouldFlush(raftIndex uint64) bool {
 
 func sortQuorums(quorums [][]roachpb.ReplicaID) {
 	// Step 1: sort each quorum slice individually
-	for _, quorum := range quorums {
-		slices.Sort(quorum)
+	for i := range quorums {
+		slices.Sort(quorums[i])
 	}
 
 	// Step 2: sort the outer slice lexicographically

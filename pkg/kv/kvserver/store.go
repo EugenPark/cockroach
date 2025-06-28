@@ -8,7 +8,6 @@ package kvserver
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -403,7 +402,7 @@ func newRaftConfig(
 	storeLiveness raftstoreliveness.StoreLiveness,
 	metrics *raft.Metrics,
 	testingKnobs *raft.TestingKnobs,
-	missingIndex uint64,
+	missingIndices *raft.MissingIndices,
 ) *raft.Config {
 	return &raft.Config{
 		ID:                          id,
@@ -426,7 +425,7 @@ func newRaftConfig(
 		CRDBVersion:                 storeCfg.Settings.Version,
 		Metrics:                     metrics,
 		TestingKnobs:                testingKnobs,
-		MissingIndex:                raftpb.Index(missingIndex),
+		MissingIndices:              missingIndices,
 	}
 }
 
@@ -2321,17 +2320,9 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 			continue
 		}
 
-		rep, err := newInitializedReplica(s, repl, true /* waitForPrevLeaseToExpire */)
+		rep, err := newInitializedReplica(ctx, s, repl, true /* waitForPrevLeaseToExpire */)
 		if err != nil {
-			if errors.Is(ErrLogIsNotRecoverable, err) {
-				fmt.Printf("Destroying range %d\n", rep.RangeID)
-				if err := rep.destroyRaftMuLocked(ctx, rep.replicaID+1); err != nil {
-					return err
-				}
-				continue
-			} else {
-				return err
-			}
+			return err
 		}
 
 		// We can't lock s.mu across NewReplica due to the lock ordering
@@ -2458,43 +2449,28 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 func (s *Store) GetMissingEntriesFromReplica(
 	ctx context.Context, replica roachpb.ReplicaDescriptor, rangeID roachpb.RangeID, missingIndices []uint64,
 ) (GetMissingEntriesResponse, error) {
-	var resp *GetMissingEntriesResponse
-	var lastErr error
-
-	// Use exponential backoff with reasonable defaults.
-	const maxAttempts = 5
-	retryOpts := retry.Options{
-		InitialBackoff: 100 * time.Millisecond,
-		MaxBackoff:     1 * time.Second,
-		Multiplier:     2,
-		Closer:         s.stopper.ShouldQuiesce(),
+	conn, err := s.cfg.NodeDialer.Dial(ctx, replica.NodeID, rpc.DefaultClass)
+	if err != nil {
+		return GetMissingEntriesResponse{}, errors.Wrapf(err, "could not dial node ID %d", replica.NodeID)
 	}
 
-	r := retry.StartWithCtx(ctx, retryOpts)
-	for attempts := 0; r.Next(); attempts++ {
-		conn, err := s.cfg.NodeDialer.Dial(ctx, replica.NodeID, rpc.DefaultClass)
-		if err != nil {
-			lastErr = errors.Wrapf(err, "could not dial node ID %d", replica.NodeID)
-			continue // retry on dial error
-		}
-
-		client := NewPerReplicaClient(conn)
-		req := &GetMissingEntriesRequest{
-			StoreRequestHeader: StoreRequestHeader{NodeID: replica.NodeID, StoreID: replica.StoreID},
-			RangeID:            rangeID,
-			MissingIndices:     missingIndices,
-		}
-		resp, err = client.GetMissingEntries(ctx, req)
-		if err != nil {
-			lastErr = err
-			continue // retry on RPC error
-		}
-		return *resp, nil // success
+	client := NewPerReplicaClient(conn)
+	req := &GetMissingEntriesRequest{
+		StoreRequestHeader: StoreRequestHeader{
+			NodeID:  replica.NodeID,
+			StoreID: replica.StoreID,
+		},
+		RangeID:        rangeID,
+		MissingIndices: missingIndices,
 	}
 
-	// Retry exhausted
-	return GetMissingEntriesResponse{}, errors.Wrapf(lastErr,
-		"GetMissingEntriesFromReplica: failed after retries for node %d", replica.NodeID)
+	resp, err := client.GetMissingEntries(ctx, req)
+	if err != nil {
+		return GetMissingEntriesResponse{}, errors.Wrapf(err,
+			"GetMissingEntriesFromReplica: RPC failed for node %d", replica.NodeID)
+	}
+
+	return *resp, nil
 }
 
 // WaitForInit waits for any asynchronous processes begun in Start()

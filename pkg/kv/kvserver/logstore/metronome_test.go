@@ -171,9 +171,9 @@ func TestGetMissingIndices(t *testing.T) {
 
 	// Test normal case without bound violations
 	expected := []uint64{
-		5, 8, 9,
+		5, 6, 7, 8, 9, 10,
 	}
-	actual := metronome.GetMissingIndices(5, 10, nil)
+	actual := metronome.GetMissingIndices(5, 10, 10, nil)
 
 	if len(expected) != len(actual) {
 		t.Fatalf("Indices do not match up. Expected %#v Got %#v\n", expected, actual)
@@ -187,9 +187,9 @@ func TestGetMissingIndices(t *testing.T) {
 
 	// Test normal case without bound violations but with a filter
 	expected = []uint64{
-		9,
+		6, 7, 9, 10,
 	}
-	actual = metronome.GetMissingIndices(5, 10, []uint64{5, 8})
+	actual = metronome.GetMissingIndices(5, 10, 10, []uint64{5, 8})
 
 	if len(expected) != len(actual) {
 		t.Fatalf("Indices do not match up in filter test case. Expected %#v Got %#v\n", expected, actual)
@@ -203,9 +203,9 @@ func TestGetMissingIndices(t *testing.T) {
 
 	// Test case with upper bound violations
 	expected = []uint64{
-		5, 8, 9,
+		5, 6, 7, 8, 9,
 	}
-	actual = metronome.GetMissingIndices(5, 7, nil)
+	actual = metronome.GetMissingIndices(5, 7, 7, nil)
 
 	if len(expected) != len(actual) {
 		t.Fatalf("Indices do not match up. Expected %#v Got %#v\n", expected, actual)
@@ -219,9 +219,9 @@ func TestGetMissingIndices(t *testing.T) {
 
 	// Test case with lower bound violations
 	expected = []uint64{
-		8, 9, 12,
+		8, 9, 10, 11, 12, 13,
 	}
-	actual = metronome.GetMissingIndices(10, 13, nil)
+	actual = metronome.GetMissingIndices(10, 13, 13, nil)
 
 	if len(expected) != len(actual) {
 		t.Fatalf("Indices do not match up. Expected %#v Got %#v\n", expected, actual)
@@ -235,12 +235,46 @@ func TestGetMissingIndices(t *testing.T) {
 
 	// Test case with both bound violations
 	expected = []uint64{
-		2, 5, 8, 9,
+		2, 3, 4, 5, 6, 7, 8, 9,
 	}
-	actual = metronome.GetMissingIndices(3, 7, nil)
+	actual = metronome.GetMissingIndices(3, 7, 7, nil)
 
 	if len(expected) != len(actual) {
 		t.Fatalf("Indices do not match up. Expected %#v Got %#v\n", expected, actual)
+	}
+
+	for i := range actual {
+		if expected[i] != actual[i] {
+			t.Fatalf("Index does not match up. Expected %d Got %d\n", expected[i], actual[i])
+		}
+	}
+
+	// Test case of commit being higher
+	expected = []uint64{
+		24, 27, 29, 30, 31, 32, 33,
+	}
+
+	actual = metronome.GetMissingIndices(22, 28, 33, []uint64{22, 23, 25, 26, 28})
+
+	if len(expected) != len(actual) {
+		t.Fatalf("Indices do not match up. Expected %v Got %v\n", expected, actual)
+	}
+
+	for i := range actual {
+		if expected[i] != actual[i] {
+			t.Fatalf("Index does not match up. Expected %d Got %d\n", expected[i], actual[i])
+		}
+	}
+
+	// Test case of commit being lower
+	expected = []uint64{
+		24, 27, 29,
+	}
+
+	actual = metronome.GetMissingIndices(22, 28, 25, []uint64{22, 23, 25, 26, 28})
+
+	if len(expected) != len(actual) {
+		t.Fatalf("Indices do not match up. Expected %v Got %v\n", expected, actual)
 	}
 
 	for i := range actual {
@@ -277,7 +311,7 @@ func TestTimeoutQueue(t *testing.T) {
 	val = 3
 	// Test cancellation
 	tq.addTimeout(ctx, raftpb.Index(2), time.Duration(10)*time.Millisecond, changeVal)
-	tq.cancelTimeout(ctx, raftpb.Index(2))
+	tq.cancelTimeout(raftpb.Index(2))
 	time.Sleep(time.Duration(100) * time.Millisecond)
 
 	if val != 3 {
@@ -296,10 +330,10 @@ func TestRaftLogMap(t *testing.T) {
 
 	// Test adding, getting and removing entries
 	rlm.Add(entries[:1])
-	actual := rlm.entries[0]
+	actual, exists := rlm.Get(1)
 
 	expected := entries[0]
-	if len(rlm.entries) != 1 || actual.Data[0] != expected.Data[0] {
+	if !exists || actual.Data[0] != expected.Data[0] {
 		t.Fatalf("Added entry with data %d != retrieved entry with data %d\n", expected.Data[0], actual.Data[0])
 	}
 
@@ -311,7 +345,7 @@ func TestRaftLogMap(t *testing.T) {
 	// Test Adding in multiple entries with holes getting last entry and ordering of log
 	rlm.Add(entries)
 
-	actual, exists := rlm.GetLast()
+	actual, exists = rlm.GetLast()
 	expected = entries[len(entries)-1]
 	if !exists || actual.Data[0] != expected.Data[0] {
 		t.Fatalf("Failed to retrieve last entry got %d expected %d\n", actual.Data[0], expected.Data[0])

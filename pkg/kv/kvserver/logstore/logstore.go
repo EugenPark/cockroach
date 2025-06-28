@@ -203,6 +203,7 @@ func (s *LogStore) storeEntriesAndCommitBatch(
 		// last index.
 		raftLogPrefix := slices.Clone(s.StateLoader.RaftLogPrefix())
 
+		// TODO: just add a batch engine to metronome itself and write there instead of this workaround
 		delayedWrite := func(ent raftpb.Entry) {
 			// Check if the engine is still open
 			if s.Engine.Closed() {
@@ -244,6 +245,12 @@ func (s *LogStore) storeEntriesAndCommitBatch(
 
 		stats.EntryStats.Add(entryStats) // TODO(pav-kv): just return the stats.
 		state.ByteSize += entryStats.SideloadedBytes
+		//
+		// log.Errorf(ctx, "Entries to flush %d, %d: [", m.Entries[0].Index, m.Entries[len(m.Entries)-1].Index)
+		// for _, ent := range entriesToFlush {
+		// 	log.Errorf(ctx, "(%d, %d), ", ent.Term, ent.Index)
+		// }
+		// log.Errorf(ctx, "]\n")
 
 		if state, err = logAppend(
 			ctx, raftLogPrefix, batch, state, lastEntry, entriesToFlush,
@@ -615,7 +622,7 @@ func LoadTerm(
 		return kvpb.RaftTerm(entry.Term), nil
 	}
 
-	entry, found = metronome.GetLastEntry()
+	entry, found = metronome.GetEntry(uint64(index))
 	if found {
 		return kvpb.RaftTerm(entry.Term), nil
 	}
@@ -663,6 +670,7 @@ func LoadTerm(
 	} else if index < ts.Index {
 		return 0, raft.ErrCompacted
 	}
+
 	return 0, raft.ErrUnavailable
 }
 
@@ -820,6 +828,37 @@ func LoadEntries(
 	}
 	fmt.Printf("]\n")
 
+	var testFlushed []raftpb.Entry
+	testfunc := func(ent raftpb.Entry) error {
+		// INFO: It is ok to not check for gaps in the log here as we will take care
+		// of that in another place in the code
+		if typ, _, err := raftlog.EncodingOf(ent); err != nil {
+			return err
+		} else if typ.IsSideloaded() {
+			if ent, err = MaybeInlineSideloadedRaftCommand(
+				ctx, rangeID, ent, sideloaded, eCache,
+			); err != nil {
+				return err
+			}
+		}
+
+		testFlushed = append(testFlushed, ent)
+
+		return nil
+	}
+
+	testreader := eng.NewReader(storage.StandardDurability)
+	defer testreader.Close()
+	if err := raftlog.Visit(ctx, testreader, rangeID, 0, hi, testfunc); err != nil {
+		return nil, 0, 0, err
+	}
+
+	fmt.Printf("Test %d: [", ts.Index)
+	for _, ent := range testFlushed {
+		fmt.Printf("%d, ", ent.Index)
+	}
+	fmt.Printf("]\n")
+
 	return nil, 0, 0, raft.ErrUnavailable
 }
 
@@ -829,7 +868,7 @@ func LoadDiskEntries(ctx context.Context, eng storage.Reader, sl SideloadStorage
 	scanFunc := func(ent raftpb.Entry) error {
 		if typ, _, err := raftlog.EncodingOf(ent); err != nil {
 			return err
-		} else if typ.IsSideloaded() {
+		} else if typ.IsSideloaded() && sl != nil {
 			if ent, err = MaybeInlineSideloadedRaftCommand(
 				ctx, rangeID, ent, sl, eCache,
 			); err != nil {
