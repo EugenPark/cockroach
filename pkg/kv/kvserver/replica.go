@@ -2939,12 +2939,12 @@ type recoveryResponse struct {
 func (r *Replica) recoverLogRaftMuLocked(
 	ctx context.Context,
 	desc *roachpb.RangeDescriptor,
-) (bool, error) {
+) (uint64, error) {
 	log.Infof(ctx, "Starting log recovery")
 
 	replicas := desc.Replicas().Descriptors()
 	if len(replicas) < 2 {
-		return true, nil
+		return 0, nil
 	}
 
 	sideloaded := r.raftMu.sideloaded
@@ -2960,17 +2960,17 @@ func (r *Replica) recoverLogRaftMuLocked(
 	// Step 1: Load own log
 	flushedIndices, hi, err := r.loadOwnLog(ctx, reader, sideloaded, ls)
 	if err != nil {
-		return false, err
+		return 0, err
 	}
 
 	hs, err := stateloader.LoadHardState(ctx, reader)
 	if err != nil {
-		return false, err
+		return 0, err
 	}
 
 	ts, err := stateloader.LoadRaftTruncatedState(ctx, reader)
 	if err != nil {
-		return false, err
+		return 0, err
 	}
 
 	lo := uint64(ts.Index) + 1
@@ -2978,10 +2978,11 @@ func (r *Replica) recoverLogRaftMuLocked(
 
 	if len(missingIndices) == 0 {
 		log.Warningf(ctx, "No missing indices between [%d, %d]", lo, hi)
-		return true, nil
+		return 0, nil
 	}
 
 	log.Warningf(ctx, "Missing indices: %v", missingIndices)
+	fmt.Printf("RangeID %d: Missing indices: %v\n", r.RangeID, missingIndices)
 
 	// Prepare for recovery
 	responses := make(chan recoveryResponse, len(replicas))
@@ -3004,7 +3005,18 @@ func (r *Replica) recoverLogRaftMuLocked(
 	// Step 3: Launch response handler goroutine
 	r.handleRecoveryResponses(ctx, missingIndices, hs.Commit, responses, inFlight)
 
-	return len(missingIndices) == 0, nil
+	if len(missingIndices) == 0 {
+		return 0, nil
+	}
+
+	slices.Sort(missingIndices)
+	lastMissingIndex := missingIndices[len(missingIndices)-1]
+
+	if lastMissingIndex == 0 {
+		return 0, nil
+	}
+
+	return lastMissingIndex - 1, nil
 }
 
 func (r *Replica) loadOwnLog(
@@ -3037,13 +3049,11 @@ func (r *Replica) queryMissingEntries(
 	missing []uint64,
 	responses chan<- recoveryResponse,
 ) {
-	fmt.Printf("Query %d\n", rep.NodeID)
 	entriesResp, err := r.store.GetMissingEntriesFromReplica(ctx, rep, r.RangeID, missing)
 	select {
 	case <-ctx.Done():
 	case responses <- recoveryResponse{entries: entriesResp.Entries, err: err}:
 	}
-	fmt.Printf("Received Resp from %d\n", rep.NodeID)
 }
 
 func (r *Replica) handleRecoveryResponses(

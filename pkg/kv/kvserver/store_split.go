@@ -249,7 +249,7 @@ func prepareRightReplicaForSplit(
 	rightRepl.mu.Lock()
 	defer rightRepl.mu.Unlock()
 	if err := rightRepl.initRaftMuLockedReplicaMuLocked(
-		state, false /* waitForPrevLeaseToExpire */, true,
+		state, false /* waitForPrevLeaseToExpire */, 0,
 	); err != nil {
 		log.Fatalf(ctx, "%v", err)
 	}

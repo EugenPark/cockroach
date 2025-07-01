@@ -248,7 +248,7 @@ type Config struct {
 	StoreLiveness raftstoreliveness.StoreLiveness
 
 	// Missing indices meaning we have not fully recovered yet
-	Recovered bool
+	MissingIndex uint64
 
 	// CRDBVersion exposes the active version to Raft. This helps version-gating
 	// features.
@@ -438,7 +438,7 @@ type raft struct {
 	testingKnobs  *TestingKnobs
 
 	// We might miss some entries that need to be recovered
-	recovered bool
+	missingIndex uint64
 }
 
 func newRaft(c *Config) *raft {
@@ -473,7 +473,7 @@ func newRaft(c *Config) *raft {
 		crdbVersion:                 c.CRDBVersion,
 		metrics:                     c.Metrics,
 		testingKnobs:                c.TestingKnobs,
-		recovered:                   c.Recovered,
+		missingIndex:                c.MissingIndex,
 	}
 	lastID := r.raftLog.lastEntryID()
 
@@ -521,15 +521,6 @@ func newRaft(c *Config) *raft {
 
 	var nodesStrs []string
 	for _, n := range r.trk.VoterNodes() {
-		if !r.recovered {
-			if n == r.id {
-				continue
-			}
-
-			r.send(
-				pb.Message{To: n, From: r.id, Type: pb.MsgRecover},
-			)
-		}
 		nodesStrs = append(nodesStrs, fmt.Sprintf("%x", n))
 	}
 
@@ -727,11 +718,13 @@ func (r *raft) maybeSendAppend(to pb.PeerID) bool {
 	if err != nil {
 		// The log probably got truncated at >= pr.Next, so we can't catch up the
 		// follower log anymore. Send a snapshot instead.
+		fmt.Printf("Sending a snap from the leader to failed term %d\n", to)
 		return r.maybeSendSnapshot(to, pr)
 	}
 	var entries []pb.Entry
 	if sendEntries {
 		if entries, err = r.raftLog.entries(prevIndex, r.maxMsgSize); err != nil {
+			fmt.Printf("Sending a snap from the leader due to failed entries to %d\n", to)
 			// Send a snapshot if we failed to get the entries.
 			return r.maybeSendSnapshot(to, pr)
 		}
@@ -1556,14 +1549,34 @@ func (r *raft) poll(
 }
 
 func (r *raft) Step(m pb.Message) error {
-	if !r.recovered {
-		if m.Type == pb.MsgRecoverResp {
+	if r.missingIndex != 0 {
+		switch m.Type {
+		case pb.MsgSnap:
 			r.handleSnapshot(m)
-			r.recovered = true
+			r.missingIndex = 0
+			fmt.Println("Raft Recovered")
+		case pb.MsgApp:
+			if m.Index > r.missingIndex {
+				r.handleAppendEntries(m)
+				r.missingIndex = 0
+				fmt.Println("Raft Recovered Append Entries")
+			}
+		default:
+			r.send(pb.Message{
+				To:    m.From,
+				Type:  pb.MsgAppResp,
+				Index: m.Index,
+				// This helps the leader track the follower's commit index. This flow is
+				// independent from accepted/rejected log appends.
+				Commit:     r.raftLog.committed,
+				Reject:     true,
+				RejectHint: r.missingIndex,
+				LogTerm:    0,
+			})
 		}
-
 		return nil
 	}
+
 	// Handle the message term, which may result in our stepping down to a follower.
 	switch {
 	case m.Term == 0:
@@ -1933,6 +1946,7 @@ func stepLeader(r *raft, m pb.Message) error {
 		pr.RecentActive = true
 		pr.MaybeUpdateMatchCommit(m.Commit)
 		if m.Reject {
+			// fmt.Printf("Rejected msg: %d\n", m.RejectHint)
 			// RejectHint is the suggested next base entry for appending (i.e.
 			// we try to append entry RejectHint+1 next), and LogTerm is the
 			// term that the follower has at index RejectHint. Older versions
@@ -2055,6 +2069,7 @@ func stepLeader(r *raft, m pb.Message) error {
 			}
 			if pr.MaybeDecrTo(m.Index, nextProbeIdx) {
 				r.logger.Debugf("%x decreased progress of %x to [%s]", r.id, m.From, pr)
+				// fmt.Printf("%x decreased progress of %x to [%s]\n", r.id, m.From, pr)
 				if pr.State == tracker.StateReplicate {
 					r.becomeProbe(pr)
 				}
@@ -2483,7 +2498,7 @@ func (r *raft) handleSnapshot(m pb.Message) {
 
 	id := s.lastEntryID()
 	if r.restore(s) {
-		r.recovered = true
+		r.missingIndex = 0
 		lastIndex := r.raftLog.lastIndex()
 		r.logger.Infof("%x [commit: %d] restored snapshot [index: %d, term: %d]",
 			r.id, r.raftLog.committed, id.index, id.term)
@@ -2722,7 +2737,7 @@ func (r *raft) restore(s snapshot) bool {
 func (r *raft) promotable() bool {
 	pr := r.trk.Progress(r.id)
 
-	return pr != nil && !pr.IsLearner && !r.raftLog.hasNextOrInProgressSnapshot() && r.recovered
+	return pr != nil && !pr.IsLearner && !r.raftLog.hasNextOrInProgressSnapshot()
 }
 
 func (r *raft) applyConfChange(cc pb.ConfChangeV2) pb.ConfState {
@@ -2835,7 +2850,7 @@ func (r *raft) switchToConfig(cfg quorum.Config, progressMap tracker.ProgressMap
 }
 
 func (r *raft) loadState(state pb.HardState) {
-	if state.Commit < r.raftLog.committed || state.Commit > r.raftLog.lastIndex() && r.recovered {
+	if state.Commit < r.raftLog.committed || state.Commit > r.raftLog.lastIndex() && r.missingIndex == 0 {
 		r.logger.Panicf("%x state.commit %d is out of range [%d, %d]", r.id, state.Commit, r.raftLog.committed, r.raftLog.lastIndex())
 	}
 
