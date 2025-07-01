@@ -402,7 +402,7 @@ func newRaftConfig(
 	storeLiveness raftstoreliveness.StoreLiveness,
 	metrics *raft.Metrics,
 	testingKnobs *raft.TestingKnobs,
-	missingIndices *raft.MissingIndices,
+	recovered bool,
 ) *raft.Config {
 	return &raft.Config{
 		ID:                          id,
@@ -425,7 +425,7 @@ func newRaftConfig(
 		CRDBVersion:                 storeCfg.Settings.Version,
 		Metrics:                     metrics,
 		TestingKnobs:                testingKnobs,
-		MissingIndices:              missingIndices,
+		Recovered:                   recovered,
 	}
 }
 
@@ -2449,28 +2449,43 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 func (s *Store) GetMissingEntriesFromReplica(
 	ctx context.Context, replica roachpb.ReplicaDescriptor, rangeID roachpb.RangeID, missingIndices []uint64,
 ) (GetMissingEntriesResponse, error) {
-	conn, err := s.cfg.NodeDialer.Dial(ctx, replica.NodeID, rpc.DefaultClass)
-	if err != nil {
-		return GetMissingEntriesResponse{}, errors.Wrapf(err, "could not dial node ID %d", replica.NodeID)
+	var resp *GetMissingEntriesResponse
+	var lastErr error
+
+	// Use exponential backoff with reasonable defaults.
+	const maxAttempts = 5
+	retryOpts := retry.Options{
+		InitialBackoff: 100 * time.Millisecond,
+		MaxBackoff:     1 * time.Second,
+		Multiplier:     2,
+		Closer:         s.stopper.ShouldQuiesce(),
 	}
 
-	client := NewPerReplicaClient(conn)
-	req := &GetMissingEntriesRequest{
-		StoreRequestHeader: StoreRequestHeader{
-			NodeID:  replica.NodeID,
-			StoreID: replica.StoreID,
-		},
-		RangeID:        rangeID,
-		MissingIndices: missingIndices,
+	r := retry.StartWithCtx(ctx, retryOpts)
+	for attempts := 0; r.Next(); attempts++ {
+		conn, err := s.cfg.NodeDialer.Dial(ctx, replica.NodeID, rpc.DefaultClass)
+		if err != nil {
+			lastErr = errors.Wrapf(err, "could not dial node ID %d", replica.NodeID)
+			continue // retry on dial error
+		}
+
+		client := NewPerReplicaClient(conn)
+		req := &GetMissingEntriesRequest{
+			StoreRequestHeader: StoreRequestHeader{NodeID: replica.NodeID, StoreID: replica.StoreID},
+			RangeID:            rangeID,
+			MissingIndices:     missingIndices,
+		}
+		resp, err = client.GetMissingEntries(ctx, req)
+		if err != nil {
+			lastErr = err
+			continue // retry on RPC error
+		}
+		return *resp, nil // success
 	}
 
-	resp, err := client.GetMissingEntries(ctx, req)
-	if err != nil {
-		return GetMissingEntriesResponse{}, errors.Wrapf(err,
-			"GetMissingEntriesFromReplica: RPC failed for node %d", replica.NodeID)
-	}
-
-	return *resp, nil
+	// Retry exhausted
+	return GetMissingEntriesResponse{}, errors.Wrapf(lastErr,
+		"GetMissingEntriesResponse: failed after retries for node %d", replica.NodeID)
 }
 
 // WaitForInit waits for any asynchronous processes begun in Start()

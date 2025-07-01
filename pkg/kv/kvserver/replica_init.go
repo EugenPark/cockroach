@@ -7,6 +7,7 @@ package kvserver
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -83,7 +84,7 @@ func loadInitializedReplicaForTesting(
 
 	// No need to wait for previous lease to expire since this is only used in
 	// tests and some tests don't expect the extra delay.
-	if err := r.initRaftMuLockedReplicaMuLocked(state, false, &raft.MissingIndices{Slice: []uint64{}}); err != nil {
+	if err := r.initRaftMuLockedReplicaMuLocked(state, false, true); err != nil {
 		return nil, err
 	}
 
@@ -104,20 +105,21 @@ func newInitializedReplica(
 	defer reader.Close()
 
 	ls := r.LogStorageRaftMuLocked()
-	// ls.Metronome.SetSchemes(repl.Desc.GetAllQuorums())
 	r.maybeRebalanceMetronomeRaftMuLocked(repl.Desc.GetAllQuorums())
 
-	missingIndices, err := r.recoverLogRaftMuLocked(ctx, repl.Desc)
+	recovered, err := r.recoverLogRaftMuLocked(ctx, repl.Desc)
 	if err != nil {
 		return nil, err
 	}
+
+	fmt.Printf("Range %d, recovered %t\n", repl.RangeID, recovered)
 
 	loaded, err := repl.Load(ctx, reader, store.StoreID(), ls.Metronome, r.raftMu.stateLoader)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := r.initRaftMuLockedReplicaMuLocked(loaded, waitForPrevLeaseToExpire, missingIndices); err != nil {
+	if err := r.initRaftMuLockedReplicaMuLocked(loaded, waitForPrevLeaseToExpire, recovered); err != nil {
 		return nil, err
 	}
 
@@ -139,7 +141,7 @@ func newUninitializedReplica(
 	defer r.raftMu.Unlock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if err := r.initRaftGroupRaftMuLockedReplicaMuLocked(&raft.MissingIndices{Slice: []uint64{}}); err != nil {
+	if err := r.initRaftGroupRaftMuLockedReplicaMuLocked(true); err != nil {
 		return nil, err
 	}
 	return r, nil
@@ -328,7 +330,7 @@ func (r *Replica) setStartKeyLocked(startKey roachpb.RKey) {
 // initRaftMuLockedReplicaMuLocked initializes the Replica using the state
 // loaded from storage. Must not be called more than once on a Replica.
 func (r *Replica) initRaftMuLockedReplicaMuLocked(
-	s kvstorage.LoadedReplicaState, waitForPrevLeaseToExpire bool, missingIndices *raft.MissingIndices,
+	s kvstorage.LoadedReplicaState, waitForPrevLeaseToExpire bool, recovered bool,
 ) error {
 	desc := s.ReplState.Desc
 	// Ensure that the loaded state corresponds to the same replica.
@@ -358,7 +360,8 @@ func (r *Replica) initRaftMuLockedReplicaMuLocked(
 	//
 	// We do this before the call to setDescLockedRaftMuLocked(), since it flips
 	// isInitialized and we'd like the Raft group to be in place before then.
-	if err := r.initRaftGroupRaftMuLockedReplicaMuLocked(missingIndices); err != nil {
+	if err := r.initRaftGroupRaftMuLockedReplicaMuLocked(recovered); err != nil {
+		fmt.Printf("err %s\n", err)
 		return err
 	}
 
@@ -396,7 +399,7 @@ func (r *Replica) initRaftMuLockedReplicaMuLocked(
 
 // initRaftGroupRaftMuLockedReplicaMuLocked initializes a Raft group for the
 // replica, replacing the existing Raft group if any.
-func (r *Replica) initRaftGroupRaftMuLockedReplicaMuLocked(missingIndices *raft.MissingIndices) error {
+func (r *Replica) initRaftGroupRaftMuLockedReplicaMuLocked(recovered bool) error {
 	ctx := r.AnnotateCtx(context.Background())
 	rg, err := raft.NewRawNode(newRaftConfig(
 		ctx,
@@ -409,7 +412,7 @@ func (r *Replica) initRaftGroupRaftMuLockedReplicaMuLocked(missingIndices *raft.
 		(*replicaRLockedStoreLiveness)(r),
 		r.store.raftMetrics,
 		r.store.TestingKnobs().RaftTestingKnobs,
-		missingIndices,
+		recovered,
 	))
 	if err != nil {
 		return err

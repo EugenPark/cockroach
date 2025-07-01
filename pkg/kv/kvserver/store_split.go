@@ -12,7 +12,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/load"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
-	"github.com/cockroachdb/cockroach/pkg/raft"
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
@@ -250,7 +249,7 @@ func prepareRightReplicaForSplit(
 	rightRepl.mu.Lock()
 	defer rightRepl.mu.Unlock()
 	if err := rightRepl.initRaftMuLockedReplicaMuLocked(
-		state, false /* waitForPrevLeaseToExpire */, &raft.MissingIndices{Slice: []uint64{}},
+		state, false /* waitForPrevLeaseToExpire */, true,
 	); err != nil {
 		log.Fatalf(ctx, "%v", err)
 	}

@@ -314,8 +314,9 @@ func (m *Metronome) ShouldRebalance(otherScheme []roachpb.ReplicaID) bool {
 
 func (m *Metronome) FilterEntries(ctx context.Context, entries []raftpb.Entry, cb func(ent raftpb.Entry)) ([]raftpb.Entry, raftpb.Entry) {
 	// log.Infof(ctx, "Filtering Entries\n")
-	min := 50  // milliseconds
-	max := 150 // milliseconds
+	// TODO: Why does this not work
+	min := 50000  // milliseconds
+	max := 150000 // milliseconds
 	randomMs := rand.Intn(max-min+1) + min
 	duration := time.Duration(randomMs) * time.Millisecond
 

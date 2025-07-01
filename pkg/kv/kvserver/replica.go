@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"math/rand"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -2940,12 +2939,12 @@ type recoveryResponse struct {
 func (r *Replica) recoverLogRaftMuLocked(
 	ctx context.Context,
 	desc *roachpb.RangeDescriptor,
-) (*raft.MissingIndices, error) {
+) (bool, error) {
 	log.Infof(ctx, "Starting log recovery")
 
 	replicas := desc.Replicas().Descriptors()
 	if len(replicas) < 2 {
-		return &raft.MissingIndices{Slice: nil}, nil
+		return true, nil
 	}
 
 	sideloaded := r.raftMu.sideloaded
@@ -2961,46 +2960,51 @@ func (r *Replica) recoverLogRaftMuLocked(
 	// Step 1: Load own log
 	flushedIndices, hi, err := r.loadOwnLog(ctx, reader, sideloaded, ls)
 	if err != nil {
-		return &raft.MissingIndices{Slice: nil}, err
+		return false, err
 	}
 
 	hs, err := stateloader.LoadHardState(ctx, reader)
 	if err != nil {
-		return &raft.MissingIndices{Slice: nil}, err
+		return false, err
 	}
 
 	ts, err := stateloader.LoadRaftTruncatedState(ctx, reader)
 	if err != nil {
-		return &raft.MissingIndices{Slice: nil}, err
+		return false, err
 	}
 
 	lo := uint64(ts.Index) + 1
+	missingIndices := ls.Metronome.GetMissingIndices(lo, hi, hs.Commit, flushedIndices)
 
-	missingIndices := &raft.MissingIndices{
-		Slice: ls.Metronome.GetMissingIndices(lo, hi, hs.Commit, flushedIndices),
-	}
-
-	missingIndices.Lock()
-	defer missingIndices.Unlock()
-	fmt.Printf("Node %d Range %d: Committed until %d\n", r.NodeID(), r.RangeID, hs.Commit)
-	if len(missingIndices.Slice) == 0 {
+	if len(missingIndices) == 0 {
 		log.Warningf(ctx, "No missing indices between [%d, %d]", lo, hi)
-		return missingIndices, nil
+		return true, nil
 	}
 
 	log.Warningf(ctx, "Missing indices: %v", missingIndices)
 
 	// Prepare for recovery
-	ctx, cancel := context.WithCancel(ctx)
 	responses := make(chan recoveryResponse, len(replicas))
+	defer close(responses)
+
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 
 	// Step 2: Launch query goroutine
-	go r.queryMissingEntriesPeriodically(ctx, cancel, replicas, missingIndices, responses)
+	inFlight := 0
+	for _, rep := range replicas {
+		if rep.NodeID == r.NodeID() {
+			continue
+		}
+		inFlight++
+
+		r.queryMissingEntries(ctx, rep, missingIndices, responses)
+	}
 
 	// Step 3: Launch response handler goroutine
-	go r.handleRecoveryResponses(ctx, cancel, missingIndices, hs.Commit, responses)
+	r.handleRecoveryResponses(ctx, missingIndices, hs.Commit, responses, inFlight)
 
-	return missingIndices, nil
+	return len(missingIndices) == 0, nil
 }
 
 func (r *Replica) loadOwnLog(
@@ -3027,109 +3031,62 @@ func (r *Replica) loadOwnLog(
 	return flushed, hi, nil
 }
 
-func (r *Replica) queryMissingEntriesPeriodically(
-	ctx context.Context,
-	cancel context.CancelFunc,
-	replicas []roachpb.ReplicaDescriptor,
-	missing *raft.MissingIndices,
-	responses chan<- recoveryResponse,
-) {
-	const min, max = 10, 15
-	random := rand.Intn(max-min+1) + min
-	ticker := time.NewTicker(time.Duration(random) * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			for _, rep := range replicas {
-				if rep.NodeID == r.NodeID() {
-					continue
-				}
-
-				go r.queryMissingEntries(ctx, rep, missing, responses)
-			}
-		}
-	}
-}
-
 func (r *Replica) queryMissingEntries(
 	ctx context.Context,
 	rep roachpb.ReplicaDescriptor,
-	missing *raft.MissingIndices,
+	missing []uint64,
 	responses chan<- recoveryResponse,
 ) {
-	missing.Lock()
-
-	fmt.Printf("Node %d Querying %d for entries in %d\n", r.NodeID(), rep.NodeID, r.RangeID)
-	entriesResp, err := r.store.GetMissingEntriesFromReplica(ctx, rep, r.RangeID, missing.Slice)
-
-	missing.Unlock()
+	fmt.Printf("Query %d\n", rep.NodeID)
+	entriesResp, err := r.store.GetMissingEntriesFromReplica(ctx, rep, r.RangeID, missing)
 	select {
 	case <-ctx.Done():
-		return
 	case responses <- recoveryResponse{entries: entriesResp.Entries, err: err}:
 	}
+	fmt.Printf("Received Resp from %d\n", rep.NodeID)
 }
 
 func (r *Replica) handleRecoveryResponses(
 	ctx context.Context,
-	cancel context.CancelFunc,
-	missing *raft.MissingIndices,
+	missing []uint64,
 	committed uint64,
 	responses <-chan recoveryResponse,
+	inFlight int,
 ) {
-	for {
+	for i := 0; i < inFlight; i++ {
 		select {
 		case <-ctx.Done():
-			fmt.Printf("Node %d Range %d recovered\n", r.NodeID(), r.RangeID)
+			log.Warningf(ctx, "Recovery timed out")
 			return
 		case resp := <-responses:
 			if resp.err != nil {
 				log.Warningf(ctx, "error fetching missing entries: %v", resp.err)
 				continue
 			}
-			fmt.Printf("Node %d Received [", r.NodeID())
-			for _, ent := range resp.entries {
-				fmt.Printf("(%d, %v) ", ent.Index, ent.Type)
-			}
-			fmt.Printf("]\n")
 
 			filtered := make([]raftpb.Entry, 0, len(resp.entries))
-			missing.Lock()
 			for _, ent := range resp.entries {
-				if idx := slices.Index(missing.Slice, ent.Index); idx != -1 {
-					missing.Slice = slices.Delete(missing.Slice, idx, idx+1)
+				if idx := slices.Index(missing, ent.Index); idx != -1 {
+					missing = slices.Delete(missing, idx, idx+1)
 					filtered = append(filtered, ent)
 				}
 			}
-			recovered := len(missing.Slice) == 0
-			if recovered {
-				cancel()
-			}
+			recovered := len(missing) == 0
 
-			fmt.Printf("Node %d Still missing: [", r.NodeID())
-			for _, i := range missing.Slice {
-				fmt.Printf("%d, ", i)
-			}
-			fmt.Printf("]\n")
-
-			r.raftMu.Lock()
 			sideloaded := r.raftMu.sideloaded
 			thin, _, err := logstore.MaybeSideloadEntries(ctx, filtered, sideloaded)
 			if err != nil {
+				r.raftMu.Unlock()
 				log.Errorf(ctx, "sideload error: %v", err)
 				continue
 			}
-			// BUG: At times there were double ents
 			ls := r.LogStorageRaftMuLocked()
 			ls.Metronome.AddRecoveredEntries(thin)
 
-			r.raftMu.Unlock()
-			missing.Unlock()
-
+			if recovered {
+				log.Infof(ctx, "Recovery complete")
+				return
+			}
 		}
 	}
 }
