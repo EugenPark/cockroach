@@ -51,11 +51,11 @@ func TestRaftStorageWrites(t *testing.T) {
 	}
 	stopper := stop.NewStopper()
 	defer stopper.Stop(ctx)
-	metronome := InitializeMetronome(1, stopper)
-	metronome.SetSchemes(schemes)
 	sl := NewStateLoader(rangeID)
 	eng := storage.NewDefaultInMemForTesting()
 	defer eng.Close()
+	metronome := InitializeMetronome(1, eng)
+	metronome.SetSchemes(schemes)
 
 	trunc := kvserverpb.RaftTruncatedState{Index: 100, Term: 20}
 	state := RaftState{LastIndex: trunc.Index, LastTerm: trunc.Term}
@@ -93,7 +93,7 @@ func TestRaftStorageWrites(t *testing.T) {
 		batch := writeBatch(func(rw storage.ReadWriter) {
 			require.NoError(t, storeHardState(ctx, rw, sl, hs))
 			var err error
-			entriesToFlush, lastEntry := metronome.FilterEntries(ctx, entries, func(ent raftpb.Entry) {})
+			entriesToFlush, lastEntry := metronome.FilterEntries(ctx, entries, func(ent raftpb.Entry, eng storage.Engine) {})
 			newState, err = logAppend(ctx, sl.RaftLogPrefix(), rw, state, lastEntry, entriesToFlush)
 			require.NoError(t, err)
 		})
@@ -224,18 +224,18 @@ func TestRaftStorageLoad(t *testing.T) {
 	}
 	stopper := stop.NewStopper()
 	defer stopper.Stop(ctx)
-	m := InitializeMetronome(roachpb.ReplicaID(2), stopper)
-	m.SetSchemes(schemes)
 	sl := NewStateLoader(rangeID)
 	entryCache := raftentry.NewCache(2048)
 	eng := storage.NewDefaultInMemForTesting()
+	m := InitializeMetronome(roachpb.ReplicaID(2), eng)
+	m.SetSchemes(schemes)
 	sideloaded := newTestingSideloadStorage(eng)
 	batch := eng.NewWriteBatch()
 	defer eng.Close()
 
 	entries := ents(1, 2, 3, 4, 5)
 
-	filteredEntries, _ := m.FilterEntries(ctx, entries, func(ent raftpb.Entry) {})
+	filteredEntries, _ := m.FilterEntries(ctx, entries, func(ent raftpb.Entry, eng storage.Engine) {})
 	raftLogPrefix := sl.RaftLogPrefix()
 	for _, ent := range filteredEntries {
 		e, err := raftlog.NewEntry(ent)

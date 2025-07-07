@@ -2,7 +2,6 @@ package logstore
 
 import (
 	"context"
-	"fmt"
 	"math"
 
 	"math/rand"
@@ -11,24 +10,27 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/keys"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/storage"
+	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
+	"github.com/cockroachdb/cockroach/pkg/storage/fs"
+	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/stop"
 )
 
 // Timeout Logic
 type timeout chan struct{}
 
 type timeoutQueue struct {
-	queue   map[raftpb.Index]timeout
-	stopper *stop.Stopper
+	queue map[raftpb.Index]timeout
 }
 
-func newTimeoutQueue(stopper *stop.Stopper) timeoutQueue {
+func newTimeoutQueue() timeoutQueue {
 	return timeoutQueue{
-		queue:   make(map[raftpb.Index]timeout),
-		stopper: stopper,
+		queue: make(map[raftpb.Index]timeout),
 	}
 }
 
@@ -37,7 +39,7 @@ func (tq *timeoutQueue) addTimeout(ctx context.Context, index raftpb.Index, dura
 	timeout := make(chan struct{})
 	tq.queue[index] = timeout
 
-	err := tq.stopper.RunAsyncTask(ctx, "metronome-timeout", func(ctx context.Context) {
+	go func(ctx context.Context) {
 		select {
 		case <-timer.C:
 			onTimeout()
@@ -45,21 +47,13 @@ func (tq *timeoutQueue) addTimeout(ctx context.Context, index raftpb.Index, dura
 			if !timer.Stop() {
 				<-timer.C // Drain to prevent goroutine leak
 			}
-		case <-tq.stopper.ShouldQuiesce():
-			// log.Info(ctx, "Stopping the timeout...")
-			if !timer.Stop() {
-				<-timer.C
-			}
 		case <-ctx.Done():
-			// log.Info(ctx, "Context is done...")
+			log.Info(ctx, "Context is done...")
 			if !timer.Stop() {
 				<-timer.C
 			}
 		}
-	})
-	if err != nil {
-		log.Warningf(ctx, "Error while running timeout: %s\n", err.Error())
-	}
+	}(ctx)
 }
 
 func (tq *timeoutQueue) cancelTimeout(index raftpb.Index) {
@@ -219,13 +213,15 @@ type Metronome struct {
 	schemes          [][]roachpb.ReplicaID
 	inflightQueue    timeoutQueue
 	unflushedEntries RaftLogMap
+	eng              storage.Engine
 }
 
-func InitializeMetronome(replicaID roachpb.ReplicaID, stopper *stop.Stopper) *Metronome {
+func InitializeMetronome(replicaID roachpb.ReplicaID, eng storage.Engine) *Metronome {
 	m := Metronome{
 		replicaID:        replicaID,
-		inflightQueue:    newTimeoutQueue(stopper),
+		inflightQueue:    newTimeoutQueue(),
 		unflushedEntries: NewRaftLogMap(),
+		eng:              eng,
 	}
 
 	return &m
@@ -312,11 +308,9 @@ func (m *Metronome) ShouldRebalance(otherScheme []roachpb.ReplicaID) bool {
 	return false
 }
 
-func (m *Metronome) FilterEntries(ctx context.Context, entries []raftpb.Entry, cb func(ent raftpb.Entry)) ([]raftpb.Entry, raftpb.Entry) {
-	// log.Infof(ctx, "Filtering Entries\n")
-	// TODO: Why does this not work
-	min := 50000  // milliseconds
-	max := 150000 // milliseconds
+func (m *Metronome) FilterEntries(ctx context.Context, entries []raftpb.Entry, raftLogPrefix []byte) ([]raftpb.Entry, raftpb.Entry) {
+	min := 10  // milliseconds
+	max := 100 // milliseconds
 	randomMs := rand.Intn(max-min+1) + min
 	duration := time.Duration(randomMs) * time.Millisecond
 
@@ -339,7 +333,7 @@ func (m *Metronome) FilterEntries(ctx context.Context, entries []raftpb.Entry, c
 			unfilteredEntries = append(unfilteredEntries, ent)
 		} else {
 			m.inflightQueue.addTimeout(ctx, raftpb.Index(ent.Index), duration, func() {
-				cb(ent)
+				DelayedWrite(ent, m.eng, raftLogPrefix)
 				m.unflushedEntries.Lock()
 				defer m.unflushedEntries.Unlock()
 				m.unflushedEntries.Remove(ent.Index)
@@ -415,7 +409,6 @@ func (m *Metronome) shouldFlush(raftIndex uint64) bool {
 
 	if raftIndex > math.MaxInt {
 		// When overflow flush to guarantee safety
-		fmt.Printf("RaftIndex %d is too large for int\n", raftIndex)
 		return true
 	}
 
@@ -480,5 +473,36 @@ func RebalanceQuorums(quorums [][]roachpb.ReplicaID) {
 
 		minIndex = -1
 		minCount = int(^uint(0) >> 1)
+	}
+}
+
+func DelayedWrite(ent raftpb.Entry, eng storage.Engine, raftLogPrefix []byte) {
+	// Check if the engine is still open
+	if eng.Closed() {
+		log.Warningf(context.Background(), "Engine is closed, skipping delayed write")
+		return
+	}
+
+	delayedBatch := newStoreEntriesBatch(eng)
+	defer delayedBatch.Close()
+
+	ctx := context.Background()
+	timeoutCtx, cancel := context.WithTimeout(ctx, time.Second*10)
+	defer cancel()
+
+	diff := &enginepb.MVCCStats{}
+	diff.Reset()
+	opts := storage.MVCCWriteOptions{Stats: diff, Category: fs.ReplicationReadCategory}
+
+	key := keys.RaftLogKeyFromPrefix(raftLogPrefix, kvpb.RaftIndex(ent.Index))
+
+	err := storage.MVCCPutProto(timeoutCtx, delayedBatch, key, hlc.Timestamp{}, &ent, opts)
+	if err != nil {
+		log.Errorf(ctx, "Delayed MVCCPut failed: %v", err)
+		return
+	}
+
+	if err := delayedBatch.Commit(true); err != nil {
+		log.Errorf(ctx, "Delayed write failed: %v", err)
 	}
 }

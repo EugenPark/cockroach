@@ -429,10 +429,7 @@ func TestMergeRaftLogs(t *testing.T) {
 }
 
 func TestClearLog(t *testing.T) {
-	ctx := context.Background()
-	stopper := stop.NewStopper()
-	defer stopper.Stop(ctx)
-	metronome := InitializeMetronome(1, stopper)
+	metronome := InitializeMetronome(1, nil)
 
 	metronome.AppendEntries([]raftpb.Entry{{Index: 1}, {Index: 4}, {Index: 5}})
 	metronome.ClearEntries()

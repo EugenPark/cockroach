@@ -1983,7 +1983,6 @@ func TestSplitSnapshotRace_SplitWins(t *testing.T) {
 		if _, pErr := kv.SendWrapped(context.Background(), tc.Servers[0].DistSenderI().(kv.Sender), incArgs); pErr != nil {
 			t.Fatal(pErr)
 		}
-		// TODO: investigate if we can even wait here or if we should just skip ahead/ sleep
 		tc.WaitForValues(t, leftKey, []int64{0, 11, 11, 11, 0, 0})
 
 		// Now wake the other stores up.
@@ -2013,15 +2012,11 @@ func TestSplitSnapshotRace_SnapshotWins(t *testing.T) {
 			require.NoError(t, tc.RestartServer(i))
 		}
 
-		fmt.Printf("Restarted 4,5,6\n")
-
 		// Perform a write on the right range.
-		// incArgs := incrementArgs(rightKey, 20)
-		// if _, pErr := kv.SendWrapped(context.Background(), tc.Servers[0].DistSenderI().(kv.Sender), incArgs); pErr != nil {
-		// 	t.Fatal(pErr)
-		// }
-
-		fmt.Printf("Wrote right range\n")
+		incArgs := incrementArgs(rightKey, 20)
+		if _, pErr := kv.SendWrapped(context.Background(), tc.Servers[0].DistSenderI().(kv.Sender), incArgs); pErr != nil {
+			t.Fatal(pErr)
+		}
 
 		// It immediately propagates between nodes 4 and 5, but node 3
 		// remains at its old value. It can't accept the right-hand range
@@ -2032,32 +2027,27 @@ func TestSplitSnapshotRace_SnapshotWins(t *testing.T) {
 		// for. There is a high probability that the message will have been
 		// received by the time that nodes 4 and 5 have processed their
 		// update.
-		// TODO: Do not wait here, instead sleep? Or jus skip ahead to restarting the other servers
-		// tc.WaitForValues(t, rightKey, []int64{0, 0, 0, 2, 25, 25})
-		time.Sleep(time.Duration(16) * time.Second)
-		fmt.Printf("Stop sleeping\n")
+		tc.WaitForValues(t, rightKey, []int64{0, 0, 0, 2, 25, 25})
 
 		// Wake up the left-hand range. This will allow the left-hand
 		// range's split to complete and unblock the right-hand range.
 		require.NoError(t, tc.RestartServer(1))
 		require.NoError(t, tc.RestartServer(2))
 
-		fmt.Printf("Restart 2,3\n")
-
 		// Perform writes on both sides. This is not strictly necessary but
 		// it helps wake up dormant ranges that would otherwise have to wait
 		// for retry timeouts.
-		incArgs := incrementArgs(leftKey, 10)
+		incArgs = incrementArgs(leftKey, 10)
 		if _, pErr := kv.SendWrapped(context.Background(), tc.Servers[0].DistSenderI().(kv.Sender), incArgs); pErr != nil {
 			t.Fatal(pErr)
 		}
 		tc.WaitForValues(t, leftKey, []int64{0, 11, 11, 11, 0, 0})
 
-		// incArgs = incrementArgs(rightKey, 200)
-		// if _, pErr := kv.SendWrapped(context.Background(), tc.Servers[0].DistSenderI().(kv.Sender), incArgs); pErr != nil {
-		// 	t.Fatal(pErr)
-		// }
-		// tc.WaitForValues(t, rightKey, []int64{0, 0, 0, 225, 225, 225})
+		incArgs = incrementArgs(rightKey, 200)
+		if _, pErr := kv.SendWrapped(context.Background(), tc.Servers[0].DistSenderI().(kv.Sender), incArgs); pErr != nil {
+			t.Fatal(pErr)
+		}
+		tc.WaitForValues(t, rightKey, []int64{0, 0, 0, 225, 225, 225})
 	})
 }
 

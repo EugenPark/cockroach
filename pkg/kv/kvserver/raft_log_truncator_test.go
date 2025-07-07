@@ -120,12 +120,12 @@ type replicaTruncatorTest struct {
 
 var _ replicaForTruncator = &replicaTruncatorTest{}
 
-func makeReplicaTT(rangeID roachpb.RangeID, buf *strings.Builder, stopper *stop.Stopper) *replicaTruncatorTest {
+func makeReplicaTT(rangeID roachpb.RangeID, buf *strings.Builder, eng storage.Engine) *replicaTruncatorTest {
 	return &replicaTruncatorTest{
 		rangeID:     rangeID,
 		buf:         buf,
 		stateLoader: stateloader.Make(rangeID),
-		metronome:   logstore.InitializeMetronome(1, stopper),
+		metronome:   logstore.InitializeMetronome(1, eng),
 	}
 }
 
@@ -308,7 +308,7 @@ func TestRaftLogTruncator(t *testing.T) {
 				d.ScanArgs(t, "trunc-index", &truncIndex)
 				var lastLogEntry uint64
 				d.ScanArgs(t, "last-log-entry", &lastLogEntry)
-				r := makeReplicaTT(rangeID, &buf, stopper)
+				r := makeReplicaTT(rangeID, &buf, eng)
 				r.truncState.Index = kvpb.RaftIndex(truncIndex)
 				r.writeRaftStateToEngine(t, eng, kvpb.RaftIndex(truncIndex), kvpb.RaftIndex(lastLogEntry))
 				store.replicas[rangeID] = r

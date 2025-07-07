@@ -7,7 +7,6 @@ package kvserver
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -70,7 +69,7 @@ func loadInitializedReplicaForTesting(
 	reader := store.TODOEngine().NewReader(storage.StandardDurability)
 	defer reader.Close()
 
-	metronome := logstore.InitializeMetronome(replicaID, store.stopper)
+	metronome := logstore.InitializeMetronome(replicaID, store.TODOEngine())
 	state, err := kvstorage.LoadReplicaState(ctx, reader, store.StoreID(), desc, replicaID, metronome)
 	if err != nil {
 		return nil, err
@@ -111,8 +110,6 @@ func newInitializedReplica(
 	if err != nil {
 		return nil, err
 	}
-
-	fmt.Printf("Range %d, recovered %d\n", repl.RangeID, missingIndex)
 
 	loaded, err := repl.Load(ctx, reader, store.StoreID(), ls.Metronome, r.raftMu.stateLoader)
 	if err != nil {
@@ -262,7 +259,7 @@ func newUninitializedReplicaWithoutRaftGroup(
 		SyncWaiter: store.syncWaiters[int(rangeID)%len(store.syncWaiters)],
 		EntryCache: store.raftEntryCache,
 		Settings:   store.cfg.Settings,
-		Metronome:  logstore.InitializeMetronome(replicaID, store.stopper),
+		Metronome:  logstore.InitializeMetronome(replicaID, store.TODOEngine()),
 		DisableSyncLogWriteToss: buildutil.CrdbTestBuild &&
 			store.TestingKnobs().DisableSyncLogWriteToss,
 	}
@@ -365,7 +362,6 @@ func (r *Replica) initRaftMuLockedReplicaMuLocked(
 	// We do this before the call to setDescLockedRaftMuLocked(), since it flips
 	// isInitialized and we'd like the Raft group to be in place before then.
 	if err := r.initRaftGroupRaftMuLockedReplicaMuLocked(missingIndex); err != nil {
-		fmt.Printf("err %s\n", err)
 		return err
 	}
 

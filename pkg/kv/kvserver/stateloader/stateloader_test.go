@@ -111,7 +111,7 @@ func TestLoadLastEntryID(t *testing.T) {
 	defer stopper.Stop(context.Background())
 
 	desc := roachpb.RangeDescriptor{RangeID: 123}
-	metronome := logstore.InitializeMetronome(1, stopper)
+	metronome := logstore.InitializeMetronome(1, eng)
 	sl := Make(desc.RangeID)
 
 	entries := ents(1, 2, 3, 4, 5)

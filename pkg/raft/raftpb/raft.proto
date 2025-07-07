@@ -60,8 +60,6 @@ enum MessageType {
   MsgFortifyLeader = 24;
   MsgFortifyLeaderResp = 25;
   MsgDeFortifyLeader = 26;
-  MsgRecover = 27;
-  MsgRecoverResp = 28;
   // NOTE: when adding new message types, remember to update the isLocalMsg and
   // isResponseMsg arrays in raft/util.go and update the corresponding tests in
   // raft/util_test.go.

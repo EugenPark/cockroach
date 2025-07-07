@@ -8,7 +8,6 @@ package logstore
 
 import (
 	"context"
-	"fmt"
 	"math"
 	"math/rand"
 	"slices"
@@ -31,7 +30,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
@@ -203,54 +201,16 @@ func (s *LogStore) storeEntriesAndCommitBatch(
 		// last index.
 		raftLogPrefix := slices.Clone(s.StateLoader.RaftLogPrefix())
 
-		// TODO: just add a batch engine to metronome itself and write there instead of this workaround
-		delayedWrite := func(ent raftpb.Entry) {
-			// Check if the engine is still open
-			if s.Engine.Closed() {
-				log.Warningf(context.Background(), "Engine is closed, skipping delayed write")
-				return
-			}
-
-			delayedBatch := newStoreEntriesBatch(s.Engine)
-			defer delayedBatch.Close()
-
-			ctx := context.Background()
-			timeoutCtx, cancel := context.WithTimeout(ctx, time.Second*10)
-			defer cancel()
-
-			diff := &enginepb.MVCCStats{}
-			diff.Reset()
-			opts := storage.MVCCWriteOptions{Stats: diff, Category: fs.ReplicationReadCategory}
-
-			key := keys.RaftLogKeyFromPrefix(raftLogPrefix, kvpb.RaftIndex(ent.Index))
-
-			err := storage.MVCCPutProto(timeoutCtx, delayedBatch, key, hlc.Timestamp{}, &ent, opts)
-			if err != nil {
-				log.Errorf(ctx, "Delayed MVCCPut failed: %v", err)
-				return
-			}
-
-			if err := delayedBatch.Commit(true); err != nil {
-				log.Errorf(ctx, "Delayed write failed: %v", err)
-			}
-		}
-
 		thinEntries, entryStats, err := MaybeSideloadEntries(ctx, m.Entries, s.Sideload)
 		if err != nil {
 			const expl = "during sideloading"
 			return RaftState{}, errors.Wrap(err, expl)
 		}
 
-		entriesToFlush, lastEntry := s.Metronome.FilterEntries(ctx, thinEntries, delayedWrite)
+		entriesToFlush, lastEntry := s.Metronome.FilterEntries(ctx, thinEntries, raftLogPrefix)
 
 		stats.EntryStats.Add(entryStats) // TODO(pav-kv): just return the stats.
 		state.ByteSize += entryStats.SideloadedBytes
-		//
-		// log.Errorf(ctx, "Entries to flush %d, %d: [", m.Entries[0].Index, m.Entries[len(m.Entries)-1].Index)
-		// for _, ent := range entriesToFlush {
-		// 	log.Errorf(ctx, "(%d, %d), ", ent.Term, ent.Index)
-		// }
-		// log.Errorf(ctx, "]\n")
 
 		if state, err = logAppend(
 			ctx, raftLogPrefix, batch, state, lastEntry, entriesToFlush,
@@ -258,7 +218,6 @@ func (s *LogStore) storeEntriesAndCommitBatch(
 			const expl = "during append"
 			return RaftState{}, errors.Wrap(err, expl)
 		}
-
 		stats.End = crtime.NowMono()
 	}
 
@@ -670,7 +629,6 @@ func LoadTerm(
 	} else if index < ts.Index {
 		return 0, raft.ErrCompacted
 	}
-
 	return 0, raft.ErrUnavailable
 }
 
@@ -804,61 +762,6 @@ func LoadEntries(
 	}
 	// We either have a gap in the log, or hi > LastIndex. Let the caller
 	// distinguish if they need to.
-	fmt.Printf("Entries %d, %d, %d: [", lo, expectedIndex, hi)
-	for _, ent := range ents {
-		fmt.Printf("%d, ", ent.Index)
-	}
-	fmt.Printf("]\n")
-
-	fmt.Printf("Metronome: [")
-	for _, ent := range metronomeEntries {
-		fmt.Printf("%d, ", ent.Index)
-	}
-	fmt.Printf("]\n")
-
-	fmt.Printf("Flushed: [")
-	for _, ent := range flushedEntries {
-		fmt.Printf("%d, ", ent.Index)
-	}
-	fmt.Printf("]\n")
-
-	fmt.Printf("NewLog: [")
-	for _, ent := range newLog {
-		fmt.Printf("%d, ", ent.Index)
-	}
-	fmt.Printf("]\n")
-
-	var testFlushed []raftpb.Entry
-	testfunc := func(ent raftpb.Entry) error {
-		// INFO: It is ok to not check for gaps in the log here as we will take care
-		// of that in another place in the code
-		if typ, _, err := raftlog.EncodingOf(ent); err != nil {
-			return err
-		} else if typ.IsSideloaded() {
-			if ent, err = MaybeInlineSideloadedRaftCommand(
-				ctx, rangeID, ent, sideloaded, eCache,
-			); err != nil {
-				return err
-			}
-		}
-
-		testFlushed = append(testFlushed, ent)
-
-		return nil
-	}
-
-	testreader := eng.NewReader(storage.StandardDurability)
-	defer testreader.Close()
-	if err := raftlog.Visit(ctx, testreader, rangeID, 0, hi, testfunc); err != nil {
-		return nil, 0, 0, err
-	}
-
-	fmt.Printf("Test %d: [", ts.Index)
-	for _, ent := range testFlushed {
-		fmt.Printf("%d, ", ent.Index)
-	}
-	fmt.Printf("]\n")
-
 	return nil, 0, 0, raft.ErrUnavailable
 }
 

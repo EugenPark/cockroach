@@ -527,7 +527,6 @@ func newRaft(c *Config) *raft {
 	// TODO(pav-kv): it should be ok to simply print %+v for lastID.
 	r.logger.Infof("newRaft %x [peers: [%s], term: %d, commit: %d, applied: %d, lastindex: %d, lastterm: %d]",
 		r.id, strings.Join(nodesStrs, ","), r.Term, r.raftLog.committed, r.raftLog.applied, lastID.index, lastID.term)
-
 	return r
 }
 
@@ -718,13 +717,11 @@ func (r *raft) maybeSendAppend(to pb.PeerID) bool {
 	if err != nil {
 		// The log probably got truncated at >= pr.Next, so we can't catch up the
 		// follower log anymore. Send a snapshot instead.
-		fmt.Printf("Sending a snap from the leader to failed term %d\n", to)
 		return r.maybeSendSnapshot(to, pr)
 	}
 	var entries []pb.Entry
 	if sendEntries {
 		if entries, err = r.raftLog.entries(prevIndex, r.maxMsgSize); err != nil {
-			fmt.Printf("Sending a snap from the leader due to failed entries to %d\n", to)
 			// Send a snapshot if we failed to get the entries.
 			return r.maybeSendSnapshot(to, pr)
 		}
@@ -1554,12 +1551,10 @@ func (r *raft) Step(m pb.Message) error {
 		case pb.MsgSnap:
 			r.handleSnapshot(m)
 			r.missingIndex = 0
-			fmt.Println("Raft Recovered")
 		case pb.MsgApp:
 			if m.Index > r.missingIndex {
 				r.handleAppendEntries(m)
 				r.missingIndex = 0
-				fmt.Println("Raft Recovered Append Entries")
 			}
 		default:
 			r.send(pb.Message{
@@ -1922,14 +1917,6 @@ func stepLeader(r *raft, m pb.Message) error {
 	case pb.MsgForgetLeader:
 		return nil // noop on leader
 
-	case pb.MsgRecover:
-		snap, err := r.raftLog.snapshot()
-		if err != nil {
-			r.logger.Fatalf("Error while generating recovery snap %s\n", err)
-		}
-
-		r.send(pb.Message{To: m.From, From: r.id, Type: pb.MsgRecoverResp, Snapshot: snap})
-		return nil
 	}
 
 	// All other message types require a progress for m.From (pr).
@@ -1946,7 +1933,6 @@ func stepLeader(r *raft, m pb.Message) error {
 		pr.RecentActive = true
 		pr.MaybeUpdateMatchCommit(m.Commit)
 		if m.Reject {
-			// fmt.Printf("Rejected msg: %d\n", m.RejectHint)
 			// RejectHint is the suggested next base entry for appending (i.e.
 			// we try to append entry RejectHint+1 next), and LogTerm is the
 			// term that the follower has at index RejectHint. Older versions
@@ -2069,7 +2055,6 @@ func stepLeader(r *raft, m pb.Message) error {
 			}
 			if pr.MaybeDecrTo(m.Index, nextProbeIdx) {
 				r.logger.Debugf("%x decreased progress of %x to [%s]", r.id, m.From, pr)
-				// fmt.Printf("%x decreased progress of %x to [%s]\n", r.id, m.From, pr)
 				if pr.State == tracker.StateReplicate {
 					r.becomeProbe(pr)
 				}
@@ -2420,13 +2405,11 @@ func (r *raft) handleAppendEntries(m pb.Message) {
 		// committed entries at m.Term (by raft invariants), so it is safe to bump
 		// the commit index even if the MsgApp is stale.
 		lastIndex := a.lastIndex()
-
 		r.raftLog.commitTo(LogMark{Term: m.Term, Index: min(m.Commit, lastIndex)})
 		r.send(pb.Message{To: m.From, Type: pb.MsgAppResp, Index: lastIndex,
 			Commit: r.raftLog.committed})
 		return
 	}
-
 	r.logger.Debugf("%x [logterm: %d, index: %d] rejected MsgApp [logterm: %d, index: %d] from %x",
 		r.id, r.raftLog.zeroTermOnOutOfBounds(r.raftLog.term(m.Index)), m.Index, m.LogTerm, m.Index, m.From)
 
@@ -2448,7 +2431,6 @@ func (r *raft) handleAppendEntries(m pb.Message) {
 	// LogTerm in this response in any case, so we don't verify it here.
 	hintIndex := min(m.Index, r.raftLog.lastIndex())
 	hintIndex, hintTerm := r.raftLog.findConflictByTerm(hintIndex, m.LogTerm)
-
 	r.send(pb.Message{
 		To:    m.From,
 		Type:  pb.MsgAppResp,
@@ -2463,8 +2445,7 @@ func (r *raft) handleAppendEntries(m pb.Message) {
 }
 
 // checkMatch ensures that the follower's log size does not contradict to the
-// leader's idea where it matches. If the logs do not match but last index is 0
-// indicating it just restarted and requires a snapshot to catch up request a snapshot
+// leader's idea where it matches.
 func (r *raft) checkMatch(match uint64) {
 	// TODO(pav-kv): lastIndex() might be not yet durable. Make this check
 	// stronger by comparing `match` with the last durable index.
@@ -2879,7 +2860,7 @@ func (r *raft) loadState(state pb.HardState) {
 }
 
 // atRandomizedElectionTimeout returns true if r.electionElapsed modulo the
-// r.randomizedElectionTimeout is equal to 0. This means that at everyraft.go
+// r.randomizedElectionTimeout is equal to 0. This means that at every
 // r.randomizedElectionTimeout period, this method will return true once.
 func (r *raft) atRandomizedElectionTimeout() bool {
 	return r.electionElapsed != 0 && r.electionElapsed%r.randomizedElectionTimeout == 0

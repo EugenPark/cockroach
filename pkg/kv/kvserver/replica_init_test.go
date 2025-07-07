@@ -66,7 +66,7 @@ func TestReplicaUpdateLastReplicaAdded(t *testing.T) {
 			r.store = tc.store
 			r.concMgr = tc.repl.concMgr
 			r.raftMu.logStorage = &logstore.LogStore{
-				Metronome: logstore.InitializeMetronome(1, stopper),
+				Metronome: logstore.InitializeMetronome(1, nil),
 			}
 			r.setDescRaftMuLocked(context.Background(), &c.newDesc)
 			if c.expectedLastReplicaAdded != r.mu.lastReplicaAdded {

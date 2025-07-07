@@ -380,7 +380,6 @@ func (s *Store) HandleRaftUncoalescedRequest(
 	// HandleRaftRequest is called on locally uncoalesced heartbeats (which are
 	// not sent over the network if the environment variable is set) so do not
 	// count them.
-	// fmt.Printf("What the f %v", s.metrics.RaftRcvdMessages)
 	s.metrics.RaftRcvdMessages[req.Message.Type].Inc(1)
 
 	// NB: add a buffer for extra messages, to allow heartbeats getting through

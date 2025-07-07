@@ -119,7 +119,7 @@ LIMIT
 	require.NoError(t, err)
 	stopper := stop.NewStopper()
 	defer stopper.Stop(ctx)
-	metronome := logstore.InitializeMetronome(1, stopper)
+	metronome := logstore.InitializeMetronome(1, eng)
 	lastEntryID, err := rsl.LoadLastEntryID(ctx, eng, ts, metronome)
 	require.NoError(t, err)
 	t.Logf("loaded LastEntryID: %+v", lastEntryID)

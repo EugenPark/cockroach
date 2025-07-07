@@ -100,7 +100,7 @@ func TestHandleTruncatedStateBelowRaft(t *testing.T) {
 					}
 				}
 
-				m := logstore.InitializeMetronome(1, stopper)
+				m := logstore.InitializeMetronome(1, eng)
 				// Apply truncation.
 				require.NoError(t, handleTruncatedStateBelowRaftPreApply(
 					ctx, currentTruncatedState, suggestedTruncatedState, loader, eng, m,
