@@ -383,7 +383,7 @@ func (d *dev) getBasicBuildArgs(
 
 	canDisableNogo := true
 	shouldBuildWithTestConfig := false
-	shouldBuildWithDebugSymbols := true
+	// shouldBuildWithDebugSymbols := true
 	for _, target := range targets {
 		target = strings.TrimPrefix(target, "./")
 		target = strings.TrimRight(target, "/")
@@ -446,12 +446,12 @@ func (d *dev) getBasicBuildArgs(
 	if canDisableNogo {
 		args = append(args, nogoDisableFlag)
 	}
-	if shouldBuildWithDebugSymbols {
-		args = append(args, "--strip=never")
-		// args = append(args,
-		// 	"--@io_bazel_rules_go//go/config:gc_goopts=-N",
-		// 	"--@io_bazel_rules_go//go/config:gc_goopts=-l")
-	}
+	// if shouldBuildWithDebugSymbols {
+	// 	args = append(args, "--strip=never")
+	// 	// args = append(args,
+	// 	// 	"--@io_bazel_rules_go//go/config:gc_goopts=-N",
+	// 	// 	"--@io_bazel_rules_go//go/config:gc_goopts=-l")
+	// }
 
 	return args, buildTargets, nil
 }
