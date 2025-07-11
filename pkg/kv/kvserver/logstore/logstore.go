@@ -201,19 +201,18 @@ func (s *LogStore) storeEntriesAndCommitBatch(
 		// last index.
 		raftLogPrefix := slices.Clone(s.StateLoader.RaftLogPrefix())
 
-		thinEntries, entryStats, err := MaybeSideloadEntries(ctx, m.Entries, s.Sideload)
+		entriesToFlush, lastEntry := s.Metronome.FilterEntries(ctx, m.Entries, raftLogPrefix)
+		thinEntries, entryStats, err := MaybeSideloadEntries(ctx, entriesToFlush, s.Sideload)
 		if err != nil {
 			const expl = "during sideloading"
 			return RaftState{}, errors.Wrap(err, expl)
 		}
 
-		entriesToFlush, lastEntry := s.Metronome.FilterEntries(ctx, thinEntries, raftLogPrefix)
-
 		stats.EntryStats.Add(entryStats) // TODO(pav-kv): just return the stats.
 		state.ByteSize += entryStats.SideloadedBytes
 
 		if state, err = logAppend(
-			ctx, raftLogPrefix, batch, state, lastEntry, entriesToFlush,
+			ctx, raftLogPrefix, batch, state, lastEntry, thinEntries,
 		); err != nil {
 			const expl = "during append"
 			return RaftState{}, errors.Wrap(err, expl)

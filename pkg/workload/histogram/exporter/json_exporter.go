@@ -56,6 +56,7 @@ func (h *HdrJsonExporter) Close(f func() error) error {
 // snapshot that is suitable for serialization. Additionally, it only contains
 // the per-tick histogram, not the cumulative histogram. (The cumulative
 // histogram can be computed by aggregating all of the per-tick histograms).
+// INFO: This differs from the original hdristogram documentation in crdbs workload
 type SnapshotTick struct {
 	Name    string
 	Hist    *hdrhistogram.Snapshot

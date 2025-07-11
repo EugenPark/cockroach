@@ -2940,8 +2940,6 @@ func (r *Replica) recoverLogRaftMuLocked(
 	ctx context.Context,
 	desc *roachpb.RangeDescriptor,
 ) (uint64, error) {
-	log.Infof(ctx, "Starting log recovery")
-
 	replicas := desc.Replicas().Descriptors()
 	if len(replicas) < 2 {
 		return 0, nil
@@ -2980,9 +2978,6 @@ func (r *Replica) recoverLogRaftMuLocked(
 		log.Warningf(ctx, "No missing indices between [%d, %d]", lo, hi)
 		return 0, nil
 	}
-
-	log.Warningf(ctx, "Missing indices: %v", missingIndices)
-	fmt.Printf("RangeID %d: Missing indices: %v\n", r.RangeID, missingIndices)
 
 	// Prepare for recovery
 	responses := make(chan recoveryResponse, len(replicas))
@@ -3083,15 +3078,15 @@ func (r *Replica) handleRecoveryResponses(
 			}
 			recovered := len(missing) == 0
 
-			sideloaded := r.raftMu.sideloaded
-			thin, _, err := logstore.MaybeSideloadEntries(ctx, filtered, sideloaded)
-			if err != nil {
-				r.raftMu.Unlock()
-				log.Errorf(ctx, "sideload error: %v", err)
-				continue
-			}
+			// sideloaded := r.raftMu.sideloaded
+			// thin, _, err := logstore.MaybeSideloadEntries(ctx, filtered, sideloaded)
+			// if err != nil {
+			// 	r.raftMu.Unlock()
+			// 	log.Errorf(ctx, "sideload error: %v", err)
+			// 	continue
+			// }
 			ls := r.LogStorageRaftMuLocked()
-			ls.Metronome.AddRecoveredEntries(thin)
+			ls.Metronome.AddRecoveredEntries(filtered)
 
 			if recovered {
 				log.Infof(ctx, "Recovery complete")
