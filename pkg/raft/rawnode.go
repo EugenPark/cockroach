@@ -18,6 +18,8 @@
 package raft
 
 import (
+	"time"
+
 	pb "github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/raft/tracker"
 	"github.com/cockroachdb/errors"
@@ -47,8 +49,8 @@ type RawNode struct {
 // recommended that instead of calling Bootstrap, applications bootstrap their
 // state manually by setting up a Storage that has a first index > 1 and which
 // stores the desired ConfState as its InitialState.
-func NewRawNode(config *Config) (*RawNode, error) {
-	r := newRaft(config)
+func NewRawNode(config *Config, init_start time.Time) (*RawNode, error) {
+	r := newRaft(config, init_start)
 	rn := &RawNode{
 		raft: r,
 	}

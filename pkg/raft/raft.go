@@ -26,6 +26,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/raft/confchange"
@@ -439,9 +440,12 @@ type raft struct {
 
 	// We might miss some entries that need to be recovered
 	missingIndex uint64
+
+	// For restart tests
+	init_start time.Time
 }
 
-func newRaft(c *Config) *raft {
+func newRaft(c *Config, init_start time.Time) *raft {
 	if err := c.validate(); err != nil {
 		panic(err.Error())
 	}
@@ -474,6 +478,7 @@ func newRaft(c *Config) *raft {
 		metrics:                     c.Metrics,
 		testingKnobs:                c.TestingKnobs,
 		missingIndex:                c.MissingIndex,
+		init_start:                  init_start,
 	}
 	lastID := r.raftLog.lastEntryID()
 
@@ -1551,11 +1556,11 @@ func (r *raft) Step(m pb.Message) error {
 		case pb.MsgSnap:
 			r.handleSnapshot(m)
 			r.missingIndex = 0
-		case pb.MsgApp:
-			if m.Index > r.missingIndex {
-				r.handleAppendEntries(m)
-				r.missingIndex = 0
-			}
+		// case pb.MsgApp:
+		// 	if m.Index > r.missingIndex {
+		// 		r.handleAppendEntries(m)
+		// 		r.missingIndex = 0
+		// 	}
 		default:
 			r.send(pb.Message{
 				To:    m.From,
@@ -1568,6 +1573,12 @@ func (r *raft) Step(m pb.Message) error {
 				RejectHint: r.missingIndex,
 				LogTerm:    0,
 			})
+		}
+
+		if r.missingIndex == 0 {
+			init_finished := time.Since(r.init_start)
+			r.logger.Infof("Finished Slow-Path-Init: %d ns\n", init_finished.Nanoseconds())
+			// fmt.Printf("Finished Slow-Path-Init: %d ns\n", init_finished.Nanoseconds())
 		}
 		return nil
 	}

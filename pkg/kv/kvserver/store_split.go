@@ -8,6 +8,7 @@ package kvserver
 import (
 	"bytes"
 	"context"
+	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/load"
@@ -249,7 +250,7 @@ func prepareRightReplicaForSplit(
 	rightRepl.mu.Lock()
 	defer rightRepl.mu.Unlock()
 	if err := rightRepl.initRaftMuLockedReplicaMuLocked(
-		state, false /* waitForPrevLeaseToExpire */, 0,
+		state, false /* waitForPrevLeaseToExpire */, 0, time.Time{},
 	); err != nil {
 		log.Fatalf(ctx, "%v", err)
 	}

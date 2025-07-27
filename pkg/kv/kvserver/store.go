@@ -2308,6 +2308,9 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 		return err
 	}
 	logEvery := log.Every(10 * time.Second)
+
+	init_start := time.Now()
+	log.Infof(ctx, "Starting Init at: %s", init_start.Format(time.RFC3339Nano))
 	for i, repl := range repls {
 		// Log progress regularly, but not for the first replica (we only want to
 		// log when this is slow). The last replica is logged after iteration.
@@ -2320,7 +2323,7 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 			continue
 		}
 
-		rep, err := newInitializedReplica(ctx, s, repl, true /* waitForPrevLeaseToExpire */)
+		rep, err := newInitializedReplica(ctx, s, repl, true /* waitForPrevLeaseToExpire */, init_start)
 		if err != nil {
 			return err
 		}

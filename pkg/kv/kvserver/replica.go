@@ -3078,15 +3078,15 @@ func (r *Replica) handleRecoveryResponses(
 			}
 			recovered := len(missing) == 0
 
-			// sideloaded := r.raftMu.sideloaded
-			// thin, _, err := logstore.MaybeSideloadEntries(ctx, filtered, sideloaded)
-			// if err != nil {
-			// 	r.raftMu.Unlock()
-			// 	log.Errorf(ctx, "sideload error: %v", err)
-			// 	continue
-			// }
+			sideloaded := r.raftMu.sideloaded
+			thin, _, err := logstore.MaybeSideloadEntries(ctx, filtered, sideloaded)
+			if err != nil {
+				r.raftMu.Unlock()
+				log.Errorf(ctx, "sideload error: %v", err)
+				continue
+			}
 			ls := r.LogStorageRaftMuLocked()
-			ls.Metronome.AddRecoveredEntries(filtered)
+			ls.Metronome.AddRecoveredEntries(thin)
 
 			if recovered {
 				log.Infof(ctx, "Recovery complete")
